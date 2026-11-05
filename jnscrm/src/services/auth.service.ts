@@ -1,11 +1,12 @@
 // services/auth.service.ts
 
 const API_BASE_URL = '/backend/auth';
+const CSRF_TOKEN_PATH = '/backend/csrf-token';
 
 let csrfToken: string | null = null;
 
 export async function fetchCsrfToken(): Promise<string> {
-  const res = await fetch(`${API_BASE_URL}/csrf-token`, {
+  const res = await fetch(CSRF_TOKEN_PATH, {
     method: 'GET',
     credentials: 'include',
     cache: 'no-store',
@@ -29,13 +30,17 @@ export function setCsrfToken(token: string): void {
 }
 
 export const authService = {
-  /**
-   * User login handle karta hai aur HttpOnly cookie browser mein set karwata hai
-   */
   async login(credentials: { email: string; password: string }) {
+    await fetchCsrfToken();
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken ?? '',
+    };
+
     const res = await fetch(`${API_BASE_URL}/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(credentials),
       credentials: 'include',
     });
@@ -46,23 +51,18 @@ export const authService = {
       throw new Error(data.message || 'Invalid credentials');
     }
 
-    try {
-      await fetchCsrfToken();
-    } catch {
-      // CSRF token fetch failed; state-changing requests will fail without it
-    }
-
     return data;
   },
 
-  /**
-   * Super Admin registration (/flash-admin ke liye)
-   */
   async registerSuperAdmin(credentials: { full_name: string; email: string; password: string; secretKey: string }) {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (csrfToken) {
-      headers['X-CSRF-Token'] = csrfToken;
+    if (!csrfToken) {
+      await fetchCsrfToken();
     }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken ?? '',
+    };
 
     const res = await fetch(`${API_BASE_URL}/register-super-admin`, {
       method: 'POST',
@@ -80,14 +80,15 @@ export const authService = {
     return data;
   },
 
-  /**
-   * Manager registration (/admin ke liye) - branch_office aur secretKey added here
-   */
   async registerManager(credentials: { full_name: string; email: string; password: string; branch_office?: string; secretKey: string }) {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (csrfToken) {
-      headers['X-CSRF-Token'] = csrfToken;
+    if (!csrfToken) {
+      await fetchCsrfToken();
     }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken ?? '',
+    };
 
     const res = await fetch(`${API_BASE_URL}/register-manager`, {
       method: 'POST',
@@ -105,9 +106,6 @@ export const authService = {
     return data;
   },
 
-  /**
-   * Pending manager requests fetch karne ke liye (Super Admin dashboard)
-   */
   async getPendingRequests() {
     const res = await fetch(`${API_BASE_URL}/pending-requests`, {
       method: 'GET',
@@ -123,13 +121,17 @@ export const authService = {
     return data;
   },
 
-  /**
-   * Backend ko logout request bhej kar cookie destroy karta hai aur user ko login page par bhejta hai
-   */
   async logout() {
+    if (!csrfToken) {
+      await fetchCsrfToken();
+    }
+
     try {
       await fetch(`${API_BASE_URL}/logout`, {
         method: 'POST',
+        headers: {
+          'X-CSRF-Token': csrfToken ?? '',
+        },
         credentials: 'include',
       });
     } catch (error) {
