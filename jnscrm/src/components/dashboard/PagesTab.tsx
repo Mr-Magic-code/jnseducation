@@ -125,9 +125,27 @@ export default function PagesTab({
               ) : (
                 displayedPages.map((p) => {
                   const isChild = p.parentPage && p.parentPage !== 'None';
-                  const pagePath = p.path.startsWith('/') ? p.path : `/${p.path}`;
+                  const rawPath = p.path || '';
+                  let pagePath = '#';
+
+                  if (rawPath) {
+                    if (rawPath.startsWith('/') && !rawPath.startsWith('//')) {
+                      pagePath = rawPath;
+                    } else {
+                      try {
+                        const url = new URL(rawPath);
+                        if (url.origin === window.location.origin) {
+                          pagePath = rawPath;
+                        }
+                      } catch {
+                        pagePath = '#';
+                      }
+                    }
+                  }
+
                   const isLinkable =
                     Boolean(p.path) &&
+                    pagePath !== '#' &&
                     !p.path.includes('[') &&
                     !p.path.includes(']') &&
                     !p.path.includes('(') &&

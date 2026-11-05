@@ -27,7 +27,7 @@ const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
   },
   allowedSchemes: ['http', 'https', 'mailto', 'tel'],
   allowedSchemesByTag: {
-    img: ['http', 'https', 'data'],
+    img: ['http', 'https'],
   },
   transformTags: {
     a: sanitizeHtml.simpleTransform('a', {
@@ -213,7 +213,7 @@ export class BlogsService {
     }
   }
 
-  async createBlog(data: CreateBlogDto) {
+  async createBlog(data: CreateBlogDto, currentUser?: { full_name: string; role: string }) {
     try {
       const finalSlug = await this.ensureUniqueSlug(
         this.slugify(data.slug || data.title),
@@ -230,8 +230,8 @@ export class BlogsService {
           data.cover_image || null,
           this.sanitizeContent(data.content),
           data.status || 'draft',
-          data.author_name.trim(),
-          data.author_role.trim(),
+          currentUser?.full_name ?? data.author_name.trim(),
+          currentUser?.role ?? data.author_role.trim(),
           now,
           now,
         ],
@@ -248,7 +248,7 @@ export class BlogsService {
     }
   }
 
-  async updateBlog(id: number, data: UpdateBlogDto) {
+  async updateBlog(id: number, data: UpdateBlogDto, currentUser?: { full_name: string; role: string }) {
     try {
       const existingRows: any = await this.db.query(
         'SELECT * FROM blogs WHERE id = ? LIMIT 1',
@@ -279,8 +279,8 @@ export class BlogsService {
           data.cover_image ?? existing.cover_image ?? null,
           this.sanitizeContent(data.content ?? existing.content),
           data.status ?? existing.status ?? 'draft',
-          (data.author_name ?? existing.author_name ?? 'Admin').trim(),
-          (data.author_role ?? existing.author_role ?? 'Admin').trim(),
+          currentUser?.full_name ?? (data.author_name ?? existing.author_name ?? 'Admin').trim(),
+          currentUser?.role ?? (data.author_role ?? existing.author_role ?? 'Admin').trim(),
           now,
           id,
         ],

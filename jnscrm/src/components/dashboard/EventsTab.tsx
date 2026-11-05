@@ -124,9 +124,26 @@ export default function EventsTab({
                 <tr><td colSpan={8} className="p-8 text-center text-gray-400">No events found. Click &quot;+ Add Event&quot; to create one!</td></tr>
               ) : (
                 filteredEvents.map((ev) => {
-                  const targetUrl = ev.target_page 
-                    ? (ev.target_page.startsWith('http') ? ev.target_page : (ev.target_page.startsWith('/') ? ev.target_page : `/${ev.target_page}`)) 
-                    : '#';
+                  const rawTarget = ev.target_page || '';
+                  let targetUrl = '#';
+
+                  if (rawTarget) {
+                    if (rawTarget.startsWith('/') && !rawTarget.startsWith('//')) {
+                      targetUrl = rawTarget;
+                    } else if (
+                      rawTarget.startsWith('http://') ||
+                      rawTarget.startsWith('https://')
+                    ) {
+                      try {
+                        const url = new URL(rawTarget);
+                        if (url.origin === window.location.origin) {
+                          targetUrl = rawTarget;
+                        }
+                      } catch {
+                        targetUrl = '#';
+                      }
+                    }
+                  }
 
                   return (
                     <tr key={ev.id} className="hover:bg-[#eef5ff]/60 transition">

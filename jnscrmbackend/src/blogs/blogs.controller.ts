@@ -8,8 +8,10 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { BlogsService } from './blogs.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
@@ -35,11 +37,13 @@ export class BlogsController {
   }
 
   @Post('categories')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async createCategory(@Body() body: CreateCategoryDto) {
     return this.blogsService.createCategory(body.name, body.slug);
   }
 
   @Put('categories/:id')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async updateCategory(
     @Param('id') id: string,
     @Body() body: UpdateCategoryDto,
@@ -48,6 +52,7 @@ export class BlogsController {
   }
 
   @Delete('categories/:id')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async deleteCategory(@Param('id') id: string) {
     return this.blogsService.deleteCategory(Number(id));
   }
@@ -63,16 +68,19 @@ export class BlogsController {
   }
 
   @Post()
-  async createBlog(@Body() body: CreateBlogDto) {
-    return this.blogsService.createBlog(body);
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async createBlog(@Body() body: CreateBlogDto, @Req() req: Request & { user: { id: number; full_name: string; role: string } }) {
+    return this.blogsService.createBlog(body, req.user);
   }
 
   @Put(':id')
-  async updateBlog(@Param('id') id: string, @Body() body: UpdateBlogDto) {
-    return this.blogsService.updateBlog(Number(id), body);
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async updateBlog(@Param('id') id: string, @Body() body: UpdateBlogDto, @Req() req: Request & { user: { id: number; full_name: string; role: string } }) {
+    return this.blogsService.updateBlog(Number(id), body, req.user);
   }
 
   @Patch(':id/status')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async updateBlogStatus(
     @Param('id') id: string,
     @Body() body: UpdateBlogStatusDto,
@@ -81,6 +89,7 @@ export class BlogsController {
   }
 
   @Delete(':id')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   async deleteBlog(@Param('id') id: string) {
     return this.blogsService.deleteBlog(Number(id));
   }

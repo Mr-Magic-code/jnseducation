@@ -16,7 +16,17 @@ const nextConfig: NextConfig = {
     remotePatterns: [
       {
         protocol: "https",
-        hostname: "**",
+        hostname: "jnscrmbackend.vercel.app",
+        pathname: "/**",
+      },
+      {
+        protocol: "https",
+        hostname: "jnsedu.com",
+        pathname: "/**",
+      },
+      {
+        protocol: "https",
+        hostname: "www.jnsedu.com",
         pathname: "/**",
       },
     ],

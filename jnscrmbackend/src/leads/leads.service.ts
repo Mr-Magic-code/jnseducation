@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import sanitizeHtml from 'sanitize-html';
 import { DatabaseService } from '../database/database.service.js';
 import { CreateLeadDto } from './dto/create-lead.dto.js';
 
@@ -6,8 +7,26 @@ import { CreateLeadDto } from './dto/create-lead.dto.js';
 export class LeadsService {
   constructor(private readonly db: DatabaseService) {}
 
+  private sanitizeFormData(data: unknown): unknown {
+    if (typeof data === 'string') {
+      return sanitizeHtml(String(data), { allowedTags: [], allowedAttributes: {} });
+    }
+    if (Array.isArray(data)) {
+      return data.map((item) => this.sanitizeFormData(item));
+    }
+    if (data && typeof data === 'object') {
+      const sanitized: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+        sanitized[key] = this.sanitizeFormData(value);
+      }
+      return sanitized;
+    }
+    return data;
+  }
+
   async create(createLeadDto: CreateLeadDto) {
     const { form_type, form_data, source_url } = createLeadDto;
+    const sanitizedFormData = this.sanitizeFormData(form_data);
     const query = `
       INSERT INTO leads (form_type, form_data, source_url, status, created_at) 
       VALUES (?, ?, ?, 'Unread', NOW())
@@ -15,7 +34,7 @@ export class LeadsService {
     
     const result: any = await this.db.query(query, [
       form_type, 
-      JSON.stringify(form_data), 
+      JSON.stringify(sanitizedFormData), 
       source_url || ''
     ]);
 

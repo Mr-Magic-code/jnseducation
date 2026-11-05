@@ -3,6 +3,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
+import sanitizeHtml from 'sanitize-html';
 import { DatabaseService } from '../database/database.service.js';
 import { CreateEventDto, UpdateEventDto } from './dto/event.dto.js';
 
@@ -29,6 +30,13 @@ interface WriteResult {
 @Injectable()
 export class EventsService {
   constructor(private readonly dbService: DatabaseService) {}
+
+  private sanitizeString(str: unknown): string {
+    return sanitizeHtml(String(str || ''), {
+      allowedTags: [],
+      allowedAttributes: {},
+    }).trim();
+  }
 
   async getEvents(status?: string) {
     try {
@@ -83,12 +91,12 @@ export class EventsService {
         `INSERT INTO events (event_name, day_and_date, event_time, venue, cover_image, target_page, event_status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
         [
-          event_name,
+          this.sanitizeString(event_name),
           day_date,
           event_time,
-          venue,
+          this.sanitizeString(venue),
           cover_image || null,
-          target_page,
+          this.sanitizeString(target_page),
           status,
         ],
       );
@@ -122,12 +130,12 @@ export class EventsService {
          SET event_name = ?, day_and_date = ?, event_time = ?, venue = ?, cover_image = ?, target_page = ?, event_status = ?, updated_at = NOW()
          WHERE id = ?`,
         [
-          event_name,
+          this.sanitizeString(event_name),
           day_date,
           event_time,
-          venue,
+          this.sanitizeString(venue),
           cover_image || null,
-          target_page,
+          this.sanitizeString(target_page),
           status,
           id,
         ],

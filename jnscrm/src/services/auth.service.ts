@@ -2,6 +2,32 @@
 
 const API_BASE_URL = '/backend/auth';
 
+let csrfToken: string | null = null;
+
+export async function fetchCsrfToken(): Promise<string> {
+  const res = await fetch(`${API_BASE_URL}/csrf-token`, {
+    method: 'GET',
+    credentials: 'include',
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    throw new Error('Failed to fetch CSRF token');
+  }
+
+  const data = await res.json() as { csrfToken: string };
+  csrfToken = data.csrfToken;
+  return csrfToken;
+}
+
+export function getCsrfToken(): string | null {
+  return csrfToken;
+}
+
+export function setCsrfToken(token: string): void {
+  csrfToken = token;
+}
+
 export const authService = {
   /**
    * User login handle karta hai aur HttpOnly cookie browser mein set karwata hai
@@ -20,6 +46,12 @@ export const authService = {
       throw new Error(data.message || 'Invalid credentials');
     }
 
+    try {
+      await fetchCsrfToken();
+    } catch {
+      // CSRF token fetch failed; state-changing requests will fail without it
+    }
+
     return data;
   },
 
@@ -27,10 +59,16 @@ export const authService = {
    * Super Admin registration (/flash-admin ke liye)
    */
   async registerSuperAdmin(credentials: { full_name: string; email: string; password: string; secretKey: string }) {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (csrfToken) {
+      headers['X-CSRF-Token'] = csrfToken;
+    }
+
     const res = await fetch(`${API_BASE_URL}/register-super-admin`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(credentials),
+      credentials: 'include',
     });
 
     const data = await res.json().catch(() => ({}));
@@ -46,10 +84,16 @@ export const authService = {
    * Manager registration (/admin ke liye) - branch_office aur secretKey added here
    */
   async registerManager(credentials: { full_name: string; email: string; password: string; branch_office?: string; secretKey: string }) {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (csrfToken) {
+      headers['X-CSRF-Token'] = csrfToken;
+    }
+
     const res = await fetch(`${API_BASE_URL}/register-manager`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(credentials),
+      credentials: 'include',
     });
 
     const data = await res.json().catch(() => ({}));
@@ -91,6 +135,7 @@ export const authService = {
     } catch (error) {
       console.error('Logout failed:', error);
     } finally {
+      csrfToken = null;
       localStorage.removeItem('user');
       window.location.replace('/protection/login');
     }

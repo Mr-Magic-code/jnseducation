@@ -3,6 +3,7 @@ import {
   Injectable,
   InternalServerErrorException,
 } from '@nestjs/common';
+import sanitizeHtml from 'sanitize-html';
 import { DatabaseService } from '../database/database.service.js';
 import { GetPagesQueryDto } from './dto/get-pages-query.dto.js';
 import { PageItemDto } from './dto/page-item.dto.js';
@@ -44,6 +45,13 @@ export class PagesService {
 
   private formatTitle(str: string): string {
     return str.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  private sanitizePageTitle(str: string): string {
+    return sanitizeHtml(String(str || ''), {
+      allowedTags: [],
+      allowedAttributes: {},
+    }).trim();
   }
 
   async getPagesFromDb(query: GetPagesQueryDto = {}) {
@@ -194,8 +202,10 @@ export class PagesService {
         if (pathSegments.length > 1) {
           const parentSlug = pathSegments.slice(0, -1).join('/');
           scannedSlugs.add(parentSlug);
-          const parentTitle = this.formatTitle(
-            pathSegments[pathSegments.length - 2],
+          const parentTitle = this.sanitizePageTitle(
+            this.formatTitle(
+              pathSegments[pathSegments.length - 2],
+            ),
           );
           const grandParentSlug =
             pathSegments.length > 2
@@ -218,8 +228,10 @@ export class PagesService {
           }
         }
 
-        const pageTitle = this.formatTitle(
-          pathSegments[pathSegments.length - 1],
+        const pageTitle = this.sanitizePageTitle(
+          this.formatTitle(
+            pathSegments[pathSegments.length - 1],
+          ),
         );
         const parentSlug =
           pathSegments.length > 1
@@ -326,9 +338,11 @@ export class PagesService {
           }
         }
 
-        const pageTitle = page.name
-          ? this.formatTitle(page.name)
-          : this.formatTitle(pathSegments[pathSegments.length - 1]);
+        const pageTitle = this.sanitizePageTitle(
+          page.name
+            ? this.formatTitle(page.name)
+            : this.formatTitle(pathSegments[pathSegments.length - 1]),
+        );
 
         const existingRows = await this.dbService.query<IdRow[]>(
           'SELECT id FROM pages WHERE slug = ? AND (parent_page <=> ?)',

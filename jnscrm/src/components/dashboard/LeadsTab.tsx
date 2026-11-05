@@ -671,9 +671,19 @@ export default function LeadsTab({
                     </div>
                     <div>
                       <span className="text-xs text-gray-400 font-semibold uppercase block">Source URL</span>
-                      <a href={selectedLead.source_url} target="_blank" rel="noreferrer" className="text-xs text-primary underline break-all">
-                        {selectedLead.source_url || 'N/A'}
-                      </a>
+                      {selectedLead.source_url ? (
+                        <>
+                          {(selectedLead.source_url.startsWith('/') && !selectedLead.source_url.startsWith('//')) || (() => { try { return new URL(selectedLead.source_url).origin === window.location.origin; } catch { return false; } })() ? (
+                            <a href={selectedLead.source_url} target="_blank" rel="noreferrer" className="text-xs text-primary underline break-all">
+                              {selectedLead.source_url}
+                            </a>
+                          ) : (
+                            <span className="text-xs text-gray-500 break-all">{selectedLead.source_url}</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-xs text-gray-500">N/A</span>
+                      )}
                     </div>
                     <div>
                       <span className="text-xs text-gray-400 font-semibold uppercase block">Created At</span>

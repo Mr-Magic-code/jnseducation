@@ -1,4 +1,4 @@
-const REQUIRED_VARIABLES = ['JWT_SECRET', 'DATABASE_HOST', 'DATABASE_USER', 'DATABASE_NAME'];
+const REQUIRED_VARIABLES = ['JWT_SECRET', 'CSRF_SECRET', 'DATABASE_HOST', 'DATABASE_USER', 'DATABASE_NAME'];
 
 const PRODUCTION_SECRET_MIN_LENGTH = 32;
 
@@ -51,15 +51,6 @@ export function validateEnvironment(
   }
 
   if (isProduction(config)) {
-    for (const variable of ['SUPER_ADMIN_SECRET_KEY', 'MANAGER_SECRET_KEY']) {
-      const value = String(config[variable] ?? '');
-      if (value.length < PRODUCTION_SECRET_MIN_LENGTH) {
-        errors.push(
-          `${variable} must be at least ${PRODUCTION_SECRET_MIN_LENGTH} characters long in production.`,
-        );
-      }
-    }
-
     const frontendUrls = String(config.FRONTEND_URLS ?? '')
       .split(',')
       .map((url) => url.trim())

@@ -7,6 +7,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { PagesService } from './pages.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
@@ -28,12 +29,14 @@ export class PagesController {
 
   @Post('scan')
   @Roles('Super-Admin')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async scanGitHub(@Body() dto: PagesScanDto) {
     return this.pagesService.scanGitHubPages(dto.mode ?? 'preview', dto.removeMissing ?? false);
   }
 
   @Post('save')
   @Roles('Super-Admin')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async savePages(
     @Body(new ParseArrayPipe({ items: PageItemDto, whitelist: true }))
     pages: PageItemDto[],

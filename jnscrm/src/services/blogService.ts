@@ -1,11 +1,54 @@
 // src/services/blogService.ts
 
+import { getCsrfToken } from '@/services/auth.service';
 import type {
   CreateBlogPayload,
   UpdateBlogPayload,
 } from '@/types/content';
+import sanitizeHtml from 'sanitize-html';
 
 const API_BASE_URL = '/backend';
+
+const BLOG_SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
+  allowedTags: [
+    ...new Set([
+      ...sanitizeHtml.defaults.allowedTags,
+      'img',
+      'figure',
+      'figcaption',
+      'span',
+    ]),
+  ],
+  allowedAttributes: {
+    ...sanitizeHtml.defaults.allowedAttributes,
+    '*': ['class'],
+    a: ['href', 'name', 'target', 'rel'],
+    img: ['src', 'alt', 'width', 'height', 'loading'],
+  },
+  allowedSchemes: ['http', 'https', 'mailto', 'tel'],
+  allowedSchemesByTag: {
+    img: ['http', 'https'],
+  },
+  transformTags: {
+    a: sanitizeHtml.simpleTransform('a', {
+      rel: 'noopener noreferrer',
+      target: '_blank',
+    }),
+  },
+};
+
+function sanitizeContent(content: string): string {
+  return sanitizeHtml(String(content || ''), BLOG_SANITIZE_OPTIONS);
+}
+
+function headersWithCsrf(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  const token = getCsrfToken();
+  if (token) {
+    headers['X-CSRF-Token'] = token;
+  }
+  return headers;
+}
 
 export const blogService = {
   // --- CATEGORIES API ---
@@ -26,7 +69,7 @@ export const blogService = {
     try {
       const response = await fetch(`${API_BASE_URL}/admin/blogs/categories`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headersWithCsrf({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ name, slug }),
       });
@@ -42,7 +85,7 @@ export const blogService = {
     try {
       const response = await fetch(`${API_BASE_URL}/admin/blogs/categories/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headersWithCsrf({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ name, slug }),
       });
@@ -58,6 +101,7 @@ export const blogService = {
     try {
       const response = await fetch(`${API_BASE_URL}/admin/blogs/categories/${id}`, {
         method: 'DELETE',
+        headers: headersWithCsrf(),
         credentials: 'include',
       });
       if (!response.ok) throw new Error('Failed to delete category');
@@ -88,11 +132,15 @@ export const blogService = {
 
   async createBlog(blogData: CreateBlogPayload) {
     try {
+      const sanitized = {
+        ...blogData,
+        content: sanitizeContent(blogData.content),
+      };
       const response = await fetch(`${API_BASE_URL}/admin/blogs`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headersWithCsrf({ 'Content-Type': 'application/json' }),
         credentials: 'include',
-        body: JSON.stringify(blogData),
+        body: JSON.stringify(sanitized),
       });
       if (!response.ok) throw new Error('Failed to create blog');
       return await response.json();
@@ -104,11 +152,15 @@ export const blogService = {
 
   async updateBlog(id: number, blogData: UpdateBlogPayload) {
     try {
+      const sanitized = {
+        ...blogData,
+        content: blogData.content ? sanitizeContent(blogData.content) : undefined,
+      };
       const response = await fetch(`${API_BASE_URL}/admin/blogs/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headersWithCsrf({ 'Content-Type': 'application/json' }),
         credentials: 'include',
-        body: JSON.stringify(blogData),
+        body: JSON.stringify(sanitized),
       });
       if (!response.ok) throw new Error('Failed to update blog');
       return await response.json();
@@ -122,7 +174,7 @@ export const blogService = {
     try {
       const response = await fetch(`${API_BASE_URL}/admin/blogs/${id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headersWithCsrf({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ status: 'trashed' }),
       });
@@ -138,7 +190,7 @@ export const blogService = {
     try {
       const response = await fetch(`${API_BASE_URL}/admin/blogs/${id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headersWithCsrf({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({ status: 'draft' }),
       });
@@ -154,6 +206,7 @@ export const blogService = {
     try {
       const response = await fetch(`${API_BASE_URL}/admin/blogs/${id}`, {
         method: 'DELETE',
+        headers: headersWithCsrf(),
         credentials: 'include',
       });
       if (!response.ok) throw new Error('Failed to permanently delete blog');

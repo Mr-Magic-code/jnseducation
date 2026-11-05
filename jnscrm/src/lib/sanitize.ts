@@ -18,7 +18,7 @@ const BLOG_SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
   },
   allowedSchemes: ['http', 'https', 'mailto', 'tel'],
   allowedSchemesByTag: {
-    img: ['http', 'https', 'data'],
+    img: ['http', 'https'],
   },
   transformTags: {
     a: sanitizeHtml.simpleTransform('a', {

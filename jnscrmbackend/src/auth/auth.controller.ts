@@ -39,13 +39,21 @@ export class AuthController {
   ) {
     const result = await this.authService.login(dto);
     const isProduction = process.env.NODE_ENV === 'production';
-
-    res.cookie('token', result.accessToken, {
+    const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
-      sameSite: 'lax',
-      maxAge: 8 * 60 * 60 * 1000,
+      sameSite: 'strict' as const,
       path: '/',
+    };
+
+    res.cookie('token', result.accessToken, {
+      ...cookieOptions,
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.cookie('refresh_token', result.refreshToken, {
+      ...cookieOptions,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
     return {
@@ -53,6 +61,36 @@ export class AuthController {
       message: result.message,
       user: result.user,
     };
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const refreshToken = req.cookies?.refresh_token;
+    const result = await this.authService.refresh(refreshToken);
+    const isProduction = process.env.NODE_ENV === 'production';
+    const cookieOptions = {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict' as const,
+      path: '/',
+    };
+
+    res.cookie('token', result.accessToken, {
+      ...cookieOptions,
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.cookie('refresh_token', result.refreshToken, {
+      ...cookieOptions,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return { success: true, message: 'Token refreshed successfully' };
   }
 
   @Post('register-super-admin')
@@ -71,13 +109,26 @@ export class AuthController {
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  async logout(@Res({ passthrough: true }) res: Response) {
+  async logout(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     const isProduction = process.env.NODE_ENV === 'production';
+    const refreshToken = req.cookies?.refresh_token;
+
+    await this.authService.logout(refreshToken);
 
     res.clearCookie('token', {
       httpOnly: true,
       secure: isProduction,
-      sameSite: 'lax',
+      sameSite: 'strict',
+      path: '/',
+    });
+
+    res.clearCookie('refresh_token', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
       path: '/',
     });
 

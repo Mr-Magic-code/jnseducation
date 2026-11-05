@@ -17,11 +17,13 @@ interface LoginAttempt {
   lockedUntil: number;
 }
 
-const DUMMY_PASSWORD_HASH =
-  '$2b$10$FHBizCgntbHPGzW4iuqqw.dC6adLv0ve8bdaPQ/1gX51WCGNN3NCK';
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;
+
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+const revokedTokens = new Set<string>();
 
 @Injectable()
 export class AuthService {
@@ -77,6 +79,29 @@ export class AuthService {
     }
 
     return timingSafeEqual(providedBuffer, expectedBuffer);
+  }
+
+  private isRevoked(token: string): boolean {
+    return revokedTokens.has(token);
+  }
+
+  private revokeToken(token: string): void {
+    revokedTokens.add(token);
+    setTimeout(() => revokedTokens.delete(token), REFRESH_TOKEN_TTL_MS);
+  }
+
+  private signAccessToken(user: { id: number; email: string; role: string }): string {
+    return this.jwtService.sign(
+      { sub: user.id, email: user.email, role: user.role, type: 'access' },
+      { expiresIn: '15m' },
+    );
+  }
+
+  private signRefreshToken(user: { id: number; email: string; role: string }): string {
+    return this.jwtService.sign(
+      { sub: user.id, email: user.email, role: user.role, type: 'refresh' },
+      { expiresIn: '7d' },
+    );
   }
 
   async handleManagerRequest(id: number, action: 'approve' | 'reject') {
@@ -238,11 +263,14 @@ export class AuthService {
 
     const user = users[0] ?? null;
 
-    const isPasswordValid = user
-      ? await bcrypt.compare(dto.password, user.password)
-      : await bcrypt.compare(dto.password, DUMMY_PASSWORD_HASH);
+    if (!user) {
+      this.recordFailedLogin(email);
+      throw new UnauthorizedException('Invalid email or password!');
+    }
 
-    if (!user || !isPasswordValid) {
+    const isPasswordValid = await bcrypt.compare(dto.password, user.password);
+
+    if (!isPasswordValid) {
       this.recordFailedLogin(email);
       throw new UnauthorizedException('Invalid email or password!');
     }
@@ -255,13 +283,15 @@ export class AuthService {
 
     this.loginAttempts.delete(email);
 
-    const payload = { sub: user.id, email: user.email, role: user.role };
-    const accessToken = this.jwtService.sign(payload);
+    const userContext = { id: user.id, email: user.email, role: user.role };
+    const accessToken = this.signAccessToken(userContext);
+    const refreshToken = this.signRefreshToken(userContext);
 
     return {
       success: true,
       message: 'Login successful!',
       accessToken,
+      refreshToken,
       user: {
         id: user.id,
         full_name: user.full_name,
@@ -270,6 +300,52 @@ export class AuthService {
         status: user.status,
       },
     };
+  }
+
+  async refresh(refreshToken: string) {
+    if (!refreshToken || this.isRevoked(refreshToken)) {
+      throw new UnauthorizedException('Invalid or revoked refresh token.');
+    }
+
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(refreshToken);
+    } catch {
+      throw new UnauthorizedException('Invalid or expired refresh token.');
+    }
+
+    if (payload.type !== 'refresh') {
+      throw new UnauthorizedException('Invalid token type.');
+    }
+
+    const users: any = await this.databaseService.query(
+      'SELECT id, email, role, status FROM users WHERE id = ? LIMIT 1',
+      [payload.sub],
+    );
+
+    if (!users.length || users[0].status !== 'approved') {
+      this.revokeToken(refreshToken);
+      throw new UnauthorizedException('User no longer exists or is not approved.');
+    }
+
+    this.revokeToken(refreshToken);
+
+    const userContext = { id: users[0].id, email: users[0].email, role: users[0].role };
+    const newAccessToken = this.signAccessToken(userContext);
+    const newRefreshToken = this.signRefreshToken(userContext);
+
+    return {
+      success: true,
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+    };
+  }
+
+  async logout(refreshToken?: string) {
+    if (refreshToken) {
+      this.revokeToken(refreshToken);
+    }
+    return { success: true, message: 'Logged out successfully' };
   }
 
   private async hasColumn(table: string, column: string): Promise<boolean> {
