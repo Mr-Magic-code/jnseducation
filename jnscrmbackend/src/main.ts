@@ -56,7 +56,7 @@ async function bootstrap() {
   app.enableCors({
     origin: (origin, callback) => {
       if (!origin) {
-        return callback(new Error('Origin header is required.'));
+        return callback(null, true);
       }
       if (!allowedOrigins.includes(origin)) {
         return callback(new Error('Request origin is not allowed.'));
