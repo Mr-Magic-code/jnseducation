@@ -7,7 +7,7 @@ const isProduction = process.env.NODE_ENV === "production";
 const BACKEND_URL =
   process.env.BACKEND_URL ||
   (isProduction
-    ? "https://jnsenterprise-65uv-alpha.vercel.app"
+    ? "https://jnscrmbackend.vercel.app"
     : "http://localhost:4000");
 
 const nextConfig: NextConfig = {
