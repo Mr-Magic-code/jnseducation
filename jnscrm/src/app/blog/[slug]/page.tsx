@@ -15,7 +15,8 @@ const getBlog = reactCache(async (slug: string) => {
     `SELECT blogs.*, blog_categories.name AS category_name
      FROM blogs
      LEFT JOIN blog_categories ON blogs.category_id = blog_categories.id
-     WHERE blogs.slug = ? AND LOWER(blogs.status) = 'published'
+     WHERE blogs.slug = ?
+     ORDER BY LOWER(blogs.status) = 'published' DESC
      LIMIT 1`,
     [slug],
   );
@@ -28,9 +29,11 @@ function toAbsoluteUrl(value: string | null | undefined): string {
   }
 
   try {
-    return new URL(value, SITE_URL).toString();
+    const url = new URL(value, SITE_URL);
+    return url.toString();
   } catch {
-    return DEFAULT_OG_IMAGE;
+    // If URL parsing fails, return as-is or default
+    return value.startsWith('http') ? value : DEFAULT_OG_IMAGE;
   }
 }
 

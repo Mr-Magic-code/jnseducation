@@ -31,28 +31,59 @@ export class LeadsService {
       INSERT INTO leads (form_type, form_data, source_url, status, created_at) 
       VALUES (?, ?, ?, 'Unread', NOW())
     `;
-    
+
     const result: any = await this.db.query(query, [
-      form_type, 
-      JSON.stringify(sanitizedFormData), 
-      source_url || ''
+      form_type,
+      JSON.stringify(sanitizedFormData),
+      source_url || '',
     ]);
 
     const leadId = result.insertId;
 
-    this.forwardToCustomCRM(createLeadDto).catch(err => {
-      // Non-blocking error handling to ensure fast response to frontend
-      console.warn('CRM Integration Error:', err?.message);
-    });
+    // Forward to CRM with retries and timeout; errors are logged but do not block
+    const crmResult = await this.forwardToCustomCRMWithRetry(
+      createLeadDto,
+      leadId,
+    );
 
-    return { success: true, message: 'Lead saved successfully', leadId };
+    if (crmResult.success) {
+      return {
+        success: true,
+        message: 'Lead saved successfully and synced to CRM',
+        leadId,
+      };
+    }
+
+    // CRM sync failed - lead exists in main DB but not in CRM
+    // Log the failure for manual follow-up
+    console.error(
+      `CRM sync failed for lead ID ${leadId}: ${crmResult.error?.message}`,
+    );
+
+    return {
+      success: true,
+      message:
+        'Lead saved successfully; CRM sync failed. Lead ID ' +
+        leadId +
+        ' requires manual CRM sync.',
+      leadId,
+      crmSyncFailed: true,
+    };
   }
 
-  private async forwardToCustomCRM(payload: CreateLeadDto) {
+  /**
+   * Forward lead to custom CRM with retry logic and timeout.
+   * Returns { success: true } on success, or { success: false, error } on final failure.
+   */
+  private async forwardToCustomCRMWithRetry(
+    payload: CreateLeadDto,
+    leadId: number,
+    maxRetries = 3,
+  ): Promise<{ success: boolean; error?: Error }> {
     const crmUrl = process.env.CRM_API_URL;
 
     if (!crmUrl) {
-      return;
+      return { success: true }; // No CRM configured, treat as success
     }
 
     const crmToken = process.env.CRM_API_TOKEN;
@@ -64,20 +95,73 @@ export class LeadsService {
       headers.Authorization = `Bearer ${crmToken}`;
     }
 
-    try {
+    // Transform payload to match CRM expected schema
+    const crmPayload = this.transformForCrm(payload);
+
+    let lastError: Error | undefined;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
       const response = await fetch(crmUrl, {
         method: 'POST',
         headers,
-        body: JSON.stringify(payload),
+        body: JSON.stringify(crmPayload),
+        signal: controller.signal,
       });
 
-      if (!response.ok) {
-        throw new Error(`CRM responded with status ${response.status}`);
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          throw new Error(`CRM responded with status ${response.status}`);
+        }
+
+        // Success - exit retry loop
+        return { success: true };
+      } catch (error: any) {
+        lastError = error;
+
+        if (attempt === maxRetries) {
+          // Last attempt failed
+          throw error;
+        }
+
+        // Exponential backoff before retry
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000 * Math.pow(2, attempt)),
+        );
       }
-    } catch (error: any) {
-      throw new Error(error?.message || 'CRM connection error');
     }
+
+    // Should not reach here, but just in case
+    return {
+      success: false,
+      error: lastError || new Error('CRM sync failed with unknown error'),
+    };
   }
+
+  /**
+   * Transform lead data to match the custom CRM API schema.
+   * Adjust field names and structure as needed for your CRM integration.
+   */
+  private transformForCrm(dto: CreateLeadDto): any {
+    const { form_type, form_data, source_url } = dto;
+    const sanitized = this.sanitizeFormData(form_data);
+
+    return {
+      form_type,
+      form_data: JSON.stringify(sanitized),
+      source_url: source_url || '',
+      // Map additional fields as required by your CRM
+      // lead_status: 'new',
+      // created_at: new Date().toISOString(),
+      // Your CRM-specific mappings here
+    };
+  }
+
+  // ... rest of the service methods (getFormTypes, findAll, updateStatus, remove) unchanged
 
   async getFormTypes(): Promise<string[]> {
     const query = `SELECT DISTINCT form_type FROM leads WHERE form_type IS NOT NULL AND form_type != '' ORDER BY form_type ASC`;

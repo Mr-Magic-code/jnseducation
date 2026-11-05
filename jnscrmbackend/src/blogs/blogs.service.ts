@@ -215,8 +215,9 @@ export class BlogsService {
 
   async createBlog(data: CreateBlogDto, currentUser?: { full_name: string; role: string }) {
     try {
+      const title = (data.title?.trim() || data.author_name?.trim() || 'Untitled');
       const finalSlug = await this.ensureUniqueSlug(
-        this.slugify(data.slug || data.title),
+        this.slugify(data.slug || title),
       );
       const now = new Date();
 
@@ -224,14 +225,14 @@ export class BlogsService {
         `INSERT INTO blogs (title, slug, category_id, cover_image, content, status, author_name, author_role, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          data.title.trim(),
+          title,
           finalSlug,
           data.category_id ?? null,
           data.cover_image || null,
-          this.sanitizeContent(data.content),
+          this.sanitizeContent(data.content ?? ''),
           data.status || 'draft',
-          currentUser?.full_name ?? data.author_name.trim(),
-          currentUser?.role ?? data.author_role.trim(),
+          currentUser?.full_name ?? (data.author_name?.trim() || title),
+          currentUser?.role ?? (data.author_role?.trim() || 'Admin'),
           now,
           now,
         ],
