@@ -37,7 +37,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ssl: sslEnabled
         ? {
             rejectUnauthorized:
-              process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false',
+              process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'true',
           }
         : undefined,
       waitForConnections: true,
