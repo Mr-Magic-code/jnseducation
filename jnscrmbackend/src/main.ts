@@ -9,7 +9,12 @@ import { AppModule } from './app.module';
 import { getAllowedOrigins } from './config/env.validation';
 
   const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-  const CSRF_EXEMPT_PATHS = new Set(['/leads']);
+  const CSRF_EXEMPT_PATHS = new Set([
+    '/leads',
+    '/auth/login',
+    '/auth/register-super-admin',
+    '/auth/register-manager',
+  ]);
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
