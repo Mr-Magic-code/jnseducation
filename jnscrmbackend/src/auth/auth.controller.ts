@@ -42,7 +42,7 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'strict') as const,
+      sameSite: (isProduction ? 'none' : 'strict') as 'strict' | 'none',
       path: '/',
     };
 
@@ -76,7 +76,7 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'strict') as const,
+      sameSite: (isProduction ? 'none' : 'strict') as 'strict' | 'none',
       path: '/',
     };
 
@@ -121,14 +121,14 @@ export class AuthController {
     res.clearCookie('token', {
       httpOnly: true,
       secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'strict') as const,
+      sameSite: (isProduction ? 'none' : 'strict') as 'strict' | 'none',
       path: '/',
     });
 
     res.clearCookie('refresh_token', {
       httpOnly: true,
       secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'strict') as const,
+      sameSite: (isProduction ? 'none' : 'strict') as 'strict' | 'none',
       path: '/',
     });
 
