@@ -21,12 +21,37 @@ export async function fetchCsrfToken(): Promise<string> {
   return csrfToken;
 }
 
-export function getCsrfToken(): string | null {
-  return csrfToken;
+function readCsrfCookie(): string | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const entry = document.cookie
+    .split('; ')
+    .find((cookie) => cookie.startsWith('csrf_token='));
+
+  return entry ? decodeURIComponent(entry.slice('csrf_token='.length)) : null;
 }
 
-export function setCsrfToken(token: string): void {
-  csrfToken = token;
+export async function ensureCsrfToken(): Promise<string> {
+  const cookieToken = readCsrfCookie();
+  if (cookieToken) {
+    csrfToken = cookieToken;
+    return cookieToken;
+  }
+
+  if (csrfToken) {
+    return csrfToken;
+  }
+
+  return fetchCsrfToken();
+}
+
+export async function getCsrfHeaders(
+  extra: Record<string, string> = {},
+): Promise<Record<string, string>> {
+  const token = await ensureCsrfToken();
+  return { ...extra, 'X-CSRF-Token': token };
 }
 
 export const authService = {
@@ -122,15 +147,13 @@ export const authService = {
   },
 
   async logout() {
-    if (!csrfToken) {
-      await fetchCsrfToken();
-    }
+    const token = await ensureCsrfToken();
 
     try {
       await fetch(`${API_BASE_URL}/logout`, {
         method: 'POST',
         headers: {
-          'X-CSRF-Token': csrfToken ?? '',
+          'X-CSRF-Token': token,
         },
         credentials: 'include',
       });

@@ -10,6 +10,9 @@ import { AuthModule } from './auth/auth.module.js';
 import { PagesModule } from './pages/pages.module.js';
 import { EventsModule } from './events/events.module.js';
 import { BlogsModule } from './blogs/blogs.module.js'; // 1. BlogsModule imported securely
+import { DashboardModule } from './dashboard/dashboard.module.js';
+import { HealthController } from './health/health.controller.js';
+import { AuditModule } from './audit/audit.module.js';
 import { validateEnvironment } from './config/env.validation.js';
 
 const throttleTtl = Number(process.env.THROTTLE_TTL_MS ?? 60000);
@@ -37,8 +40,10 @@ const throttleLimit = Number(process.env.THROTTLE_LIMIT ?? 100);
     PagesModule,
     EventsModule,
     BlogsModule, // 2. BlogsModule registered in imports array
+    DashboardModule,
+    AuditModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, HealthController],
   providers: [
     AppService,
     {

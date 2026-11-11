@@ -3,6 +3,7 @@
 
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { authService } from '@/services/auth.service';
+import { apiFetch } from '@/lib/api';
 
 // Modular Components Import
 import Sidebar from '@/components/dashboard/Sidebar';
@@ -17,7 +18,6 @@ import UsersTab from '@/components/dashboard/UsersTab';
 import AllBlogsTab from '@/components/dashboard/AllBlogsTab';
 import AddBlogTab from '@/components/dashboard/AddBlogTab';
 import BlogCategoriesTab from '@/components/dashboard/BlogCategoriesTab';
-import { blogService } from '@/services/blogService';
 import { downloadCsv, downloadJson } from '@/lib/csv';
 import type {
   AppTab,
@@ -83,7 +83,7 @@ export default function DashboardPage() {
   const [allUsers, setAllUsers] = useState<RequestUser[]>([]);
   const [approvedUsersCount, setApprovedUsersCount] = useState<number>(0);
   const [totalBlogsCount, setTotalBlogsCount] = useState<number>(0);
-  const [blogs, setBlogs] = useState<BlogItem[]>([]);
+  const [blogs] = useState<BlogItem[]>([]);
   
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [totalSubmissions, setTotalSubmissions] = useState<number>(0);
@@ -119,7 +119,7 @@ export default function DashboardPage() {
 
   const handleSoftDeleteSubmission = async (id: number) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/leads/${id}/status`, {
+      const res = await apiFetch(`${API_BASE_URL}/leads/${id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -139,7 +139,7 @@ export default function DashboardPage() {
 
   const handleRecoverSubmission = async (id: number) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/leads/${id}/status`, {
+      const res = await apiFetch(`${API_BASE_URL}/leads/${id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -160,7 +160,7 @@ export default function DashboardPage() {
   const handlePermanentDeleteSubmission = async (id: number) => {
     if (!window.confirm('Are you sure you want to permanently delete this lead?')) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/leads/${id}`, {
+      const res = await apiFetch(`${API_BASE_URL}/leads/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       });
@@ -198,11 +198,11 @@ export default function DashboardPage() {
       const responses = await Promise.all(
         processingIds.map((id) =>
           action === 'delete'
-            ? fetch(`${API_BASE_URL}/leads/${id}`, {
+            ? apiFetch(`${API_BASE_URL}/leads/${id}`, {
                 method: 'DELETE',
                 credentials: 'include',
               })
-            : fetch(`${API_BASE_URL}/leads/${id}/status`, {
+            : apiFetch(`${API_BASE_URL}/leads/${id}/status`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -313,148 +313,57 @@ export default function DashboardPage() {
     { label: 'Trashed', value: 'trashed' },
   ], []);
 
-  const fetchOverviewData = useCallback(async (role: string) => {
-    const loadLeads = async () => {
-      try {
-        const [allRes, unreadRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/leads?page=1&limit=1`, {
-            credentials: 'include',
-            cache: 'no-store',
-          }),
-          fetch(`${API_BASE_URL}/leads?page=1&limit=5&status=Unread`, {
-            credentials: 'include',
-            cache: 'no-store',
-          }),
-        ]);
+  const loadDashboardSummary = useCallback(async () => {
+    try {
+      const res = await apiFetch(`${API_BASE_URL}/dashboard/summary`, {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      await handleApiResponse(res);
+      if (!res.ok) throw new Error('Failed to load dashboard summary');
 
-        await handleApiResponse(allRes);
-        await handleApiResponse(unreadRes);
+      const data = await res.json();
+      const user = data.user || {};
 
-        if (allRes.ok) {
-          const allData = await allRes.json();
-          setTotalSubmissions(Number(allData.total) || 0);
-        }
+      if (user.role) setUserRole(user.role);
+      setUserName(user.full_name || user.name || 'Unknown User');
+      setUserEmail(user.email || '');
 
-        if (unreadRes.ok) {
-          const unreadData = await unreadRes.json();
-          const unreadRows = Array.isArray(unreadData)
-            ? unreadData
-            : unreadData.data || [];
-          setSubmissions(processSubmissions(unreadRows));
-          setTotalUnreadSubmissions(Number(unreadData.total) || 0);
-        }
-      } catch (error) {
-        if ((error as Error).message !== 'Unauthorized session') {
-          console.error('Error loading overview leads:', error);
-        }
-      }
-    };
+      setTotalSubmissions(Number(data.leads?.total) || 0);
+      setTotalUnreadSubmissions(Number(data.leads?.unreadTotal) || 0);
+      setSubmissions(processSubmissions(data.leads?.unread || []));
 
-    const loadPages = async () => {
-      try {
-        const res = await fetch(
-          `${API_BASE_URL}/admin/pages?page=1&limit=5`,
-          { credentials: 'include', cache: 'no-store' }
-        );
-        await handleApiResponse(res);
-        if (res.ok) {
-          const data = await res.json();
-          setPagesList(Array.isArray(data.pages) ? data.pages : []);
-          setTotalFilteredPagesCount(Number(data.total) || 0);
-          setTotalPagesPages(Number(data.totalPages) || 1);
-        }
-      } catch (error) {
-        if ((error as Error).message !== 'Unauthorized session') {
-          console.error('Error loading overview pages:', error);
-        }
-      }
-    };
+      setPagesList(Array.isArray(data.pages?.recent) ? data.pages.recent : []);
+      setTotalFilteredPagesCount(Number(data.pages?.total) || 0);
 
-    const loadBlogs = async () => {
-      try {
-        const data = await blogService.getBlogs(1, 5);
-        setBlogs(data.blogs || []);
-        setTotalBlogsCount(Number(data.total) || 0);
-      } catch (error) {
-        console.error('Error loading overview blogs:', error);
-      }
-    };
+      setTotalBlogsCount(Number(data.blogs?.total) || 0);
 
-    const loadUsers = async () => {
-      if (role !== 'Super-Admin') {
-        setAllUsers([]);
-        setApprovedUsersCount(0);
-        return;
-      }
+      setAllUsers([]);
+      setApprovedUsersCount(Number(data.users?.total) || 0);
 
-      try {
-        const res = await fetch(`${API_BASE_URL}/auth/users`, {
-          credentials: 'include',
-          cache: 'no-store',
-        });
-        await handleApiResponse(res);
-        if (res.ok) {
-          const data = await res.json();
-          const formattedUsers = (data.users || []).map((user: RequestUser & { full_name?: string }) => ({
-            ...user,
-            name: user.full_name || user.name || 'N/A',
-          }));
-          setAllUsers(formattedUsers);
-          setApprovedUsersCount(formattedUsers.length);
-        }
-      } catch (error) {
-        if ((error as Error).message !== 'Unauthorized session') {
-          console.error('Error loading overview users:', error);
-        }
-      }
-    };
-
-    const loadRequests = async () => {
-      if (role !== 'Super-Admin') {
-        setRequests([]);
-        return;
-      }
-
-      try {
-        const data = await authService.getPendingRequests();
-        const formattedRequests = (
-          Array.isArray(data) ? data : data.requests || []
-        ).map((request: RequestUser & { full_name?: string }) => ({
+      const pending = Array.isArray(data.requests?.pending)
+        ? data.requests.pending
+        : [];
+      setRequests(
+        pending.map((request: RequestUser & { full_name?: string }) => ({
           ...request,
           name: request.full_name || request.name || 'N/A',
-        }));
-        setRequests(formattedRequests);
-      } catch (error) {
-        if ((error as Error).message !== 'Unauthorized session') {
-          console.error('Error loading overview requests:', error);
-        }
-      }
-    };
+        })),
+      );
 
-    await Promise.allSettled([
-      loadLeads(),
-      loadPages(),
-      loadBlogs(),
-      loadUsers(),
-      loadRequests(),
-    ]);
-  }, [
-    setTotalSubmissions,
-    setSubmissions,
-    setTotalUnreadSubmissions,
-    setPagesList,
-    setTotalFilteredPagesCount,
-    setTotalPagesPages,
-    setBlogs,
-    setTotalBlogsCount,
-    setAllUsers,
-    setApprovedUsersCount,
-    setRequests,
-  ]);
+      return user;
+    } catch (error) {
+      if ((error as Error).message !== 'Unauthorized session') {
+        console.error('Error loading dashboard summary:', error);
+        setMessage({ text: 'Failed to load dashboard overview.', type: 'error' });
+      }
+      return null;
+    }
+  }, []);
 
   const fetchFormTypes = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/leads/form-types`, { credentials: 'include' });
+      const res = await apiFetch(`${API_BASE_URL}/leads/form-types`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setFormTypesList(Array.isArray(data) ? data : (data.formTypes || []));
@@ -489,7 +398,7 @@ export default function DashboardPage() {
   const fetchLeads = useCallback(async () => {
     try {
       setIsLoading(true);
-      const leadsRes = await fetch(
+      const leadsRes = await apiFetch(
         `${API_BASE_URL}/leads?${buildLeadsQuery(currentPageSub, itemsPerPageSub)}`,
         {
           method: 'GET',
@@ -552,7 +461,7 @@ export default function DashboardPage() {
   }, []);
 
   const fetchAllFilteredLeads = useCallback(async (): Promise<Submission[]> => {
-    const firstRes = await fetch(
+    const firstRes = await apiFetch(
       `${API_BASE_URL}/leads?${buildLeadsQuery(1, 200, false)}`,
       { credentials: 'include', cache: 'no-store' }
     );
@@ -568,7 +477,7 @@ export default function DashboardPage() {
     if (totalPages > 1) {
       const responses = await Promise.all(
         Array.from({ length: totalPages - 1 }, (_, index) =>
-          fetch(
+          apiFetch(
             `${API_BASE_URL}/leads?${buildLeadsQuery(index + 2, 200, false)}`,
             { credentials: 'include', cache: 'no-store' }
           )
@@ -692,7 +601,7 @@ export default function DashboardPage() {
       if (search.trim()) queryParams.append('search', search.trim());
       if (filter) queryParams.append('filter', filter);
 
-      const res = await fetch(`${API_BASE_URL}/admin/pages?${queryParams.toString()}`, { 
+      const res = await apiFetch(`${API_BASE_URL}/admin/pages?${queryParams.toString()}`, { 
         method: 'GET',
         headers: { 'Cache-Control': 'no-cache' },
         credentials: 'include',
@@ -721,7 +630,7 @@ export default function DashboardPage() {
 
   const fetchEventsList = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/admin/events`, { credentials: 'include' });
+      const res = await apiFetch(`${API_BASE_URL}/admin/events`, { credentials: 'include' });
       await handleApiResponse(res);
       if (res.ok) {
         const data = await res.json();
@@ -739,35 +648,16 @@ export default function DashboardPage() {
     hasFetchedInitialRef.current = true;
 
     async function fetchInitialData() {
-      try {
-        const res = await fetch(`${API_BASE_URL}/auth/me`, {
-          credentials: 'include',
-          cache: 'no-store',
+      const user = await loadDashboardSummary();
+      if (!user) {
+        setMessage({
+          text: 'Unable to load your account. Please sign in again.',
+          type: 'error',
         });
-        await handleApiResponse(res);
-        if (!res.ok) throw new Error('Failed to load session');
-
-        const data = await res.json();
-        const user = data.user;
-        if (!user) throw new Error('Invalid session');
-
-        const role = user.role || '';
-        setUserRole(role);
-        setUserName(user.full_name || user.name || 'Unknown User');
-        setUserEmail(user.email || '');
-        await fetchOverviewData(role);
-      } catch (error) {
-        if ((error as Error).message !== 'Unauthorized session') {
-          console.error('Error loading initial data:', error);
-          setMessage({
-            text: 'Unable to load your account. Please sign in again.',
-            type: 'error',
-          });
-        }
       }
     }
     fetchInitialData();
-  }, [fetchOverviewData]);
+  }, [loadDashboardSummary]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -790,25 +680,19 @@ export default function DashboardPage() {
     setMessage({ text: '', type: '' });
     
     if (tab === 'overview') {
-      await fetchOverviewData(userRole);
+      await loadDashboardSummary();
     } else if (tab === 'submissions') {
+      // The submissions effect below loads leads and form types once the tab is active.
       setCurrentPageSub(1);
-      await Promise.all([fetchLeads(), fetchFormTypes()]);
     } else if (tab === 'all-pages') {
+      // The pages effect below loads the page list once the tab is active.
       setCurrentPagePages(1);
-      await fetchPagesList(1, itemsPerPagePages);
     } else if (tab === 'all-events') {
       await fetchEventsList();
     } else if (tab === 'add-event') {
       await fetchPagesList(1, itemsPerPagePages, '', 'events');
     } else if (tab === 'all-blogs' || tab === 'add-blog') {
-      try {
-        const blogsData = await blogService.getBlogs(1, 10);
-        setBlogs(blogsData.blogs || []);
-        setTotalBlogsCount(blogsData.total || 0);
-      } catch (err) {
-        console.error("Error fetching blogs:", err);
-      }
+      // AllBlogsTab / AddBlogTab load their own data on mount.
     } else if (tab === 'requests' && userRole === 'Super-Admin') {
       try {
         const data = await authService.getPendingRequests();
@@ -822,7 +706,7 @@ export default function DashboardPage() {
       }
     } else if (tab === 'users' && userRole === 'Super-Admin') {
       try {
-        const res = await fetch(`${API_BASE_URL}/auth/users`, {
+        const res = await apiFetch(`${API_BASE_URL}/auth/users`, {
           credentials: 'include',
           cache: 'no-store',
         });
@@ -842,25 +726,32 @@ export default function DashboardPage() {
         }
       }
     }
-  }, [fetchLeads, fetchFormTypes, fetchPagesList, fetchEventsList, fetchOverviewData, userRole, itemsPerPagePages]);
+  }, [fetchPagesList, fetchEventsList, loadDashboardSummary, userRole, itemsPerPagePages]);
 
   const handleScanPages = async () => {
     try {
       setIsLoading(true);
-      const res = await fetch(`${API_BASE_URL}/admin/pages/scan`, {
+      const res = await apiFetch(`${API_BASE_URL}/admin/pages/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ mode: 'sync', removeMissing: false }),
       });
       await handleApiResponse(res);
-      if (res.ok) {
-        setMessage({ text: 'GitHub repository synchronized with database!', type: 'success' });
-        fetchPagesList(currentPagePages, itemsPerPagePages, pageSearchQuery);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.message || 'Failed to synchronize with GitHub.');
       }
+      setMessage({
+        text:
+          data.message ||
+          `GitHub repository synchronized. ${Number(data.wouldInsert) || 0} new page(s) found.`,
+        type: 'success',
+      });
+      await fetchPagesList(currentPagePages, itemsPerPagePages, pageSearchQuery);
     } catch (e) {
       console.error('Error scanning pages:', e);
-      setMessage({ text: 'Failed to synchronize with GitHub.', type: 'error' });
+      setMessage({ text: getErrorMessage(e, 'Failed to synchronize with GitHub.'), type: 'error' });
     } finally {
       setIsLoading(false);
     }
@@ -868,7 +759,7 @@ export default function DashboardPage() {
 
   const handleSavePageToDB = async (page: PageItem) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/admin/pages/save`, {
+      const res = await apiFetch(`${API_BASE_URL}/admin/pages/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -916,7 +807,7 @@ export default function DashboardPage() {
         ...(editingEventId ? { id: editingEventId } : {}),
       };
 
-      const res = await fetch(`${API_BASE_URL}/admin/events`, {
+      const res = await apiFetch(`${API_BASE_URL}/admin/events`, {
         method: editingEventId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -964,7 +855,7 @@ export default function DashboardPage() {
   const handleDeleteEvent = async (id: number) => {
     if (!window.confirm("Are you sure you want to delete this event?")) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/admin/events?id=${id}`, { method: 'DELETE', credentials: 'include' });
+      const res = await apiFetch(`${API_BASE_URL}/admin/events?id=${id}`, { method: 'DELETE', credentials: 'include' });
       await handleApiResponse(res);
       if (!res.ok) throw new Error('Failed to delete event');
       setMessage({ text: 'Event deleted successfully!', type: 'success' });
@@ -977,7 +868,7 @@ export default function DashboardPage() {
   const handleAction = async (id: number, action: 'approve' | 'reject') => {
     setMessage({ text: '', type: '' });
     try {
-      const res = await fetch(`${API_BASE_URL}/auth/requests`, {
+      const res = await apiFetch(`${API_BASE_URL}/auth/requests`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -1010,7 +901,7 @@ export default function DashboardPage() {
   const handleDeleteUser = async (id: number) => {
     if (!window.confirm("Are You sure to Delete this User Permanently")) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/auth/delete-user?id=${id}`, { method: 'DELETE', credentials: 'include' });
+      const res = await apiFetch(`${API_BASE_URL}/auth/delete-user?id=${id}`, { method: 'DELETE', credentials: 'include' });
       await handleApiResponse(res);
       if (!res.ok) throw new Error('Failed to delete user');
       setMessage({ text: 'User deleted successfully from database!', type: 'success' });

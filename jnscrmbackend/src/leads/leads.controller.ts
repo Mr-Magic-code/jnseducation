@@ -8,8 +8,10 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { LeadsService } from './leads.service.js';
 import { CreateLeadDto } from './dto/create-lead.dto.js';
@@ -66,14 +68,40 @@ export class LeadsController {
   updateStatus(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: UpdateLeadStatusDto,
+    @Req() req?: Request & {
+      user?: { id: number; email: string; role: string };
+    },
   ) {
-    return this.leadsService.updateStatus(id, body.status);
+    if (!req?.user) {
+      return this.leadsService.updateStatus(id, body.status);
+    }
+
+    return this.leadsService.updateStatus(id, body.status, {
+      id: req.user.id,
+      email: req.user.email,
+      role: req.user.role,
+      ip: req.ip,
+    });
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('Super-Admin', 'Manager')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.leadsService.remove(id);
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req?: Request & {
+      user?: { id: number; email: string; role: string };
+    },
+  ) {
+    if (!req?.user) {
+      return this.leadsService.remove(id);
+    }
+
+    return this.leadsService.remove(id, {
+      id: req.user.id,
+      email: req.user.email,
+      role: req.user.role,
+      ip: req.ip,
+    });
   }
 }

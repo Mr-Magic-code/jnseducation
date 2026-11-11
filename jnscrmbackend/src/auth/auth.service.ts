@@ -1,15 +1,20 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { DatabaseService } from '../database/database.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { invalidateUserCache } from './jwt-auth.guard.js';
 import { SignupDto } from './dto/signup.dto.js';
 import { LoginDto } from './dto/login.dto.js';
+import { isRegistrationEnabled } from '../config/env.validation.js';
 
 interface LoginAttempt {
   failures: number;
@@ -20,9 +25,17 @@ interface LoginAttempt {
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;
+const LOGIN_ATTEMPTS_MAX_ENTRIES = 5_000;
+
+const BCRYPT_ROUNDS = 12;
 
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+// Fast in-process cache. The durable source of truth is the `revoked_tokens`
+// table (see db/migrations/001_hardening.sql); the set only avoids a DB read
+// for the common case.
 const revokedTokens = new Set<string>();
 
 @Injectable()
@@ -32,7 +45,24 @@ export class AuthService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly jwtService: JwtService,
+    @Optional() private readonly audit?: AuditService,
   ) {}
+
+  private pruneLoginAttempts(): void {
+    if (this.loginAttempts.size <= LOGIN_ATTEMPTS_MAX_ENTRIES) {
+      return;
+    }
+
+    const now = Date.now();
+    for (const [key, attempt] of this.loginAttempts) {
+      if (
+        attempt.lockedUntil <= now &&
+        now - attempt.firstFailureAt > LOGIN_ATTEMPT_WINDOW_MS
+      ) {
+        this.loginAttempts.delete(key);
+      }
+    }
+  }
 
   private isLocked(key: string): boolean {
     const attempt = this.loginAttempts.get(key);
@@ -52,6 +82,8 @@ export class AuthService {
   }
 
   private recordFailedLogin(key: string): void {
+    this.pruneLoginAttempts();
+
     const now = Date.now();
     const attempt = this.loginAttempts.get(key);
 
@@ -81,26 +113,67 @@ export class AuthService {
     return timingSafeEqual(providedBuffer, expectedBuffer);
   }
 
-  private isRevoked(token: string): boolean {
-    return revokedTokens.has(token);
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
   }
 
-  private revokeToken(token: string): void {
+  private async isRevoked(token: string): Promise<boolean> {
+    if (revokedTokens.has(token)) {
+      return true;
+    }
+
+    try {
+      const rows: unknown = await this.databaseService.query(
+        'SELECT 1 FROM revoked_tokens WHERE token_hash = ? AND expires_at > NOW() LIMIT 1',
+        [this.hashToken(token)],
+      );
+      return Array.isArray(rows) && rows.length > 0;
+    } catch {
+      // If the revocation table is not available yet, fall back to the
+      // in-process set (still correct for this instance).
+      return false;
+    }
+  }
+
+  private async revokeToken(token: string): Promise<void> {
     revokedTokens.add(token);
-    setTimeout(() => revokedTokens.delete(token), REFRESH_TOKEN_TTL_MS);
+    const timer = setTimeout(
+      () => revokedTokens.delete(token),
+      REFRESH_TOKEN_TTL_MS,
+    );
+    timer.unref?.();
+
+    try {
+      await this.databaseService.query(
+        `INSERT INTO revoked_tokens (token_hash, expires_at)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE expires_at = VALUES(expires_at)`,
+        [this.hashToken(token), new Date(Date.now() + REFRESH_TOKEN_TTL_MS)],
+      );
+    } catch {
+      // Table may not exist in older deployments; in-memory revocation remains.
+    }
   }
 
-  private signAccessToken(user: { id: number; email: string; role: string }): string {
+  private signAccessToken(user: {
+    id: number;
+    email: string;
+    role: string;
+  }): string {
     return this.jwtService.sign(
       { sub: user.id, email: user.email, role: user.role, type: 'access' },
-      { expiresIn: '15m' },
+      { expiresIn: ACCESS_TOKEN_TTL_SECONDS },
     );
   }
 
-  private signRefreshToken(user: { id: number; email: string; role: string }): string {
+  private signRefreshToken(user: {
+    id: number;
+    email: string;
+    role: string;
+  }): string {
     return this.jwtService.sign(
       { sub: user.id, email: user.email, role: user.role, type: 'refresh' },
-      { expiresIn: '7d' },
+      { expiresIn: REFRESH_TOKEN_TTL_SECONDS },
     );
   }
 
@@ -115,6 +188,12 @@ export class AuthService {
         throw new NotFoundException('Pending manager request not found.');
       }
 
+      invalidateUserCache(id);
+      this.audit?.record({
+        action: 'manager_approved',
+        entity: 'user',
+        entityId: id,
+      });
       return { success: true, message: 'Manager approved successfully' };
     }
 
@@ -127,6 +206,12 @@ export class AuthService {
       throw new NotFoundException('Pending manager request not found.');
     }
 
+    invalidateUserCache(id);
+    this.audit?.record({
+      action: 'manager_rejected',
+      entity: 'user',
+      entityId: id,
+    });
     return { success: true, message: 'Request rejected and removed' };
   }
 
@@ -138,6 +223,12 @@ export class AuthService {
   }
 
   async register(dto: SignupDto, role: 'super-admin' | 'manager') {
+    if (!isRegistrationEnabled(role)) {
+      throw new ForbiddenException(
+        'Account registration is disabled. Contact an administrator.',
+      );
+    }
+
     const email = dto.email.trim().toLowerCase();
     const secretKey = String(dto.secretKey ?? '');
     const expectedSecret =
@@ -167,7 +258,7 @@ export class AuthService {
       throw new BadRequestException('User with this email already exists!');
     }
 
-    const hashedPassword = await bcrypt.hash(dto.password, 10);
+    const hashedPassword = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
     const accountStatus = role === 'super-admin' ? 'approved' : 'pending';
     const dbRole = role === 'super-admin' ? 'Super-Admin' : 'Manager';
 
@@ -192,19 +283,29 @@ export class AuthService {
       values,
     );
 
+    this.audit?.record({
+      action:
+        role === 'super-admin'
+          ? 'super_admin_registered'
+          : 'manager_registration_requested',
+      entity: 'user',
+      entityId: email,
+      metadata: { email, role: dbRole },
+    });
+
     return {
       success: true,
       message: `${dbRole} registered successfully!`,
     };
   }
 
-  async deleteUser(id: number, currentUserId: number) {
+  async deleteUser(id: number, currentUserId: number, actor?: { email?: string; role?: string; ip?: string }) {
     if (id === currentUserId) {
       throw new BadRequestException('You cannot delete your own account.');
     }
 
     const users: any = await this.databaseService.query(
-      'SELECT id, role FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, role, email FROM users WHERE id = ? LIMIT 1',
       [id],
     );
 
@@ -224,6 +325,17 @@ export class AuthService {
     }
 
     await this.databaseService.query('DELETE FROM users WHERE id = ?', [id]);
+    invalidateUserCache(id);
+    this.audit?.record({
+      actorId: currentUserId,
+      actorEmail: actor?.email ?? null,
+      actorRole: actor?.role ?? null,
+      action: 'user_deleted',
+      entity: 'user',
+      entityId: id,
+      metadata: { deletedEmail: users[0].email },
+      ip: actor?.ip ?? null,
+    });
     return { success: true, message: 'User deleted successfully' };
   }
 
@@ -247,10 +359,11 @@ export class AuthService {
     return { user: users[0] };
   }
 
-  async login(dto: LoginDto) {
+  async login(dto: LoginDto, ip = 'unknown') {
     const email = dto.email.trim().toLowerCase();
+    const attemptKey = `${ip}|${email}`;
 
-    if (this.isLocked(email)) {
+    if (this.isLocked(attemptKey)) {
       throw new UnauthorizedException(
         'Too many failed login attempts. Please try again later.',
       );
@@ -264,14 +377,14 @@ export class AuthService {
     const user = users[0] ?? null;
 
     if (!user) {
-      this.recordFailedLogin(email);
+      this.recordFailedLogin(attemptKey);
       throw new UnauthorizedException('Invalid email or password!');
     }
 
     const isPasswordValid = await bcrypt.compare(dto.password, user.password);
 
     if (!isPasswordValid) {
-      this.recordFailedLogin(email);
+      this.recordFailedLogin(attemptKey);
       throw new UnauthorizedException('Invalid email or password!');
     }
 
@@ -281,11 +394,21 @@ export class AuthService {
       );
     }
 
-    this.loginAttempts.delete(email);
+    this.loginAttempts.delete(attemptKey);
 
     const userContext = { id: user.id, email: user.email, role: user.role };
     const accessToken = this.signAccessToken(userContext);
     const refreshToken = this.signRefreshToken(userContext);
+
+    this.audit?.record({
+      actorId: user.id,
+      actorEmail: user.email,
+      actorRole: user.role,
+      action: 'login_success',
+      entity: 'user',
+      entityId: user.id,
+      ip,
+    });
 
     return {
       success: true,
@@ -303,7 +426,7 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string) {
-    if (!refreshToken || this.isRevoked(refreshToken)) {
+    if (!refreshToken || (await this.isRevoked(refreshToken))) {
       throw new UnauthorizedException('Invalid or revoked refresh token.');
     }
 
@@ -324,13 +447,19 @@ export class AuthService {
     );
 
     if (!users.length || users[0].status !== 'approved') {
-      this.revokeToken(refreshToken);
-      throw new UnauthorizedException('User no longer exists or is not approved.');
+      await this.revokeToken(refreshToken);
+      throw new UnauthorizedException(
+        'User no longer exists or is not approved.',
+      );
     }
 
-    this.revokeToken(refreshToken);
+    await this.revokeToken(refreshToken);
 
-    const userContext = { id: users[0].id, email: users[0].email, role: users[0].role };
+    const userContext = {
+      id: users[0].id,
+      email: users[0].email,
+      role: users[0].role,
+    };
     const newAccessToken = this.signAccessToken(userContext);
     const newRefreshToken = this.signRefreshToken(userContext);
 
@@ -343,7 +472,7 @@ export class AuthService {
 
   async logout(refreshToken?: string) {
     if (refreshToken) {
-      this.revokeToken(refreshToken);
+      await this.revokeToken(refreshToken);
     }
     return { success: true, message: 'Logged out successfully' };
   }

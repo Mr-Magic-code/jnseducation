@@ -213,6 +213,52 @@ export class BlogsService {
     }
   }
 
+  async getPublishedBlogs(page: number = 1, limit: number = 20) {
+    const parsedPage = Math.max(Number(page) || 1, 1);
+    const parsedLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const offset = (parsedPage - 1) * parsedLimit;
+
+    const blogs = await this.db.query(
+      `SELECT b.id, b.title, b.slug, b.cover_image, b.author_name, b.author_role,
+              b.status, b.created_at, b.updated_at, c.name AS category_name
+       FROM blogs b
+       LEFT JOIN blog_categories c ON b.category_id = c.id
+       WHERE LOWER(b.status) = 'published'
+       ORDER BY b.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [parsedLimit, offset],
+    );
+
+    const countRows: any = await this.db.query(
+      "SELECT COUNT(*) AS total FROM blogs WHERE LOWER(status) = 'published'",
+    );
+    const total = Number(countRows[0]?.total) || 0;
+
+    return {
+      blogs,
+      total,
+      totalPages: Math.max(Math.ceil(total / parsedLimit), 1),
+      currentPage: parsedPage,
+    };
+  }
+
+  async getPublishedBlogBySlug(slug: string) {
+    const rows: any = await this.db.query(
+      `SELECT b.*, c.name AS category_name
+       FROM blogs b
+       LEFT JOIN blog_categories c ON b.category_id = c.id
+       WHERE b.slug = ? AND LOWER(b.status) = 'published'
+       LIMIT 1`,
+      [slug],
+    );
+
+    if (!rows.length) {
+      throw new NotFoundException('Blog not found.');
+    }
+
+    return rows[0];
+  }
+
   async createBlog(data: CreateBlogDto, currentUser?: { full_name: string; role: string }) {
     try {
       const title = (data.title?.trim() || data.author_name?.trim() || 'Untitled');

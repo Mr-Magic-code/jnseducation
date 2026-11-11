@@ -6,10 +6,12 @@ import { AuthService } from './auth.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RolesGuard } from './roles.guard.js';
 import { DatabaseModule } from '../database/database.module.js';
+import { AuditModule } from '../audit/audit.module.js';
 
 @Module({
   imports: [
     DatabaseModule,
+    AuditModule,
     JwtModule.registerAsync({
       global: true,
       imports: [ConfigModule],

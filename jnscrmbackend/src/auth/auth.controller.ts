@@ -35,14 +35,15 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   async login(
     @Body() dto: LoginDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.login(dto);
+    const result = await this.authService.login(dto, req.ip);
     const isProduction = process.env.NODE_ENV === 'production';
     const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'strict') as 'strict' | 'none',
+      sameSite: (isProduction ? 'lax' : 'strict') as 'lax' | 'strict',
       path: '/',
     };
 
@@ -76,7 +77,7 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'strict') as 'strict' | 'none',
+      sameSite: (isProduction ? 'lax' : 'strict') as 'lax' | 'strict',
       path: '/',
     };
 
@@ -121,14 +122,14 @@ export class AuthController {
     res.clearCookie('token', {
       httpOnly: true,
       secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'strict') as 'strict' | 'none',
+      sameSite: (isProduction ? 'lax' : 'strict') as 'lax' | 'strict',
       path: '/',
     });
 
     res.clearCookie('refresh_token', {
       httpOnly: true,
       secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'strict') as 'strict' | 'none',
+      sameSite: (isProduction ? 'lax' : 'strict') as 'lax' | 'strict',
       path: '/',
     });
 
@@ -174,6 +175,10 @@ export class AuthController {
     @Query('id') id: string,
     @Req() req: AuthenticatedRequest,
   ) {
-    return this.authService.deleteUser(Number(id), req.user.id);
+    return this.authService.deleteUser(Number(id), req.user.id, {
+      email: req.user.email,
+      role: req.user.role,
+      ip: req.ip,
+    });
   }
 }

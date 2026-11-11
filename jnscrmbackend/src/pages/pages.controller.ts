@@ -31,7 +31,11 @@ export class PagesController {
   @Roles('Super-Admin')
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   async scanGitHub(@Body() dto: PagesScanDto) {
-    return this.pagesService.scanGitHubPages(dto.mode ?? 'preview', dto.removeMissing ?? false);
+    return this.pagesService.scanGitHubPages(
+      dto.mode ?? 'preview',
+      dto.removeMissing ?? false,
+      dto.confirmDestructive ?? false,
+    );
   }
 
   @Post('save')

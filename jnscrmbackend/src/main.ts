@@ -1,28 +1,92 @@
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
-import { json, urlencoded, type NextFunction, type Request, type Response } from 'express';
-import { randomBytes } from 'crypto';
+import {
+  json,
+  urlencoded,
+  type NextFunction,
+  type Request,
+  type Response,
+} from 'express';
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { getAllowedOrigins } from './config/env.validation';
+import { AllExceptionsFilter } from './common/all-exceptions.filter';
 
-  const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-  const CSRF_EXEMPT_PATHS = new Set([
-    '/leads',
-    '/auth/login',
-    '/auth/register-super-admin',
-    '/auth/register-manager',
-  ]);
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const CSRF_EXEMPT_PATHS = new Set([
+  '/leads',
+  '/auth/login',
+  '/auth/register-super-admin',
+  '/auth/register-manager',
+]);
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
+function parseTrustProxy(value: string | undefined): number | boolean {
+  if (value === undefined || value === '') {
+    return 1;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  if (value === 'true') {
+    return true;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 1;
+}
+
+function getCsrfSecret(): string {
+  return process.env.CSRF_SECRET ?? '';
+}
+
+function signCsrfNonce(nonce: string): string {
+  return createHmac('sha256', getCsrfSecret())
+    .update(nonce)
+    .digest('base64url');
+}
+
 function generateCsrfToken(): string {
-  return Buffer.from(randomBytes(32)).toString('base64url');
+  const nonce = randomBytes(32).toString('base64url');
+  return `${nonce}.${signCsrfNonce(nonce)}`;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const aBuffer = Buffer.from(a);
+  const bBuffer = Buffer.from(b);
+  if (aBuffer.length !== bBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(aBuffer, bBuffer);
+}
+
+function isValidCsrfToken(token: string): boolean {
+  const separatorIndex = token.indexOf('.');
+  if (separatorIndex <= 0) {
+    return false;
+  }
+  const nonce = token.slice(0, separatorIndex);
+  const signature = token.slice(separatorIndex + 1);
+  if (!nonce || !signature) {
+    return false;
+  }
+  return safeEqual(signature, signCsrfNonce(nonce));
+}
+
+function isOriginAllowed(
+  origin: string | undefined,
+  allowedOrigins: string[],
+): boolean {
+  if (!origin) {
+    return true;
+  }
+  return allowedOrigins.includes(origin);
 }
 
 async function bootstrap() {
@@ -32,22 +96,22 @@ async function bootstrap() {
 
   const expressApp = app.getHttpAdapter().getInstance();
   expressApp.disable('x-powered-by');
-
-  const trustProxy = process.env.TRUST_PROXY;
-  expressApp.set(
-    'trust proxy',
-    trustProxy === 'false'
-      ? false
-      : trustProxy === 'true'
-        ? true
-        : parsePositiveInt(trustProxy, 1),
-  );
+  expressApp.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 
   const isProduction = process.env.NODE_ENV === 'production';
 
   app.use(
     helmet({
-      contentSecurityPolicy: false,
+      contentSecurityPolicy: {
+        useDefaults: false,
+        directives: {
+          defaultSrc: ["'none'"],
+          baseUri: ["'none'"],
+          frameAncestors: ["'none'"],
+          formAction: ["'none'"],
+          objectSrc: ["'none'"],
+        },
+      },
       crossOriginResourcePolicy: { policy: 'same-site' },
       referrerPolicy: { policy: 'no-referrer' },
       strictTransportSecurity: isProduction
@@ -82,7 +146,7 @@ async function bootstrap() {
       res.cookie('csrf_token', token, {
         httpOnly: false,
         secure: isProduction,
-        sameSite: isProduction ? 'none' : 'lax',
+        sameSite: 'lax',
         path: '/',
         maxAge: 24 * 60 * 60 * 1000,
       });
@@ -90,19 +154,37 @@ async function bootstrap() {
     }
 
     if (STATE_CHANGING_METHODS.has(req.method)) {
-      const path = req.route?.path ?? req.path;
-      if (CSRF_EXEMPT_PATHS.has(path)) {
-        return next();
-      }
-
-      const cookieToken = req.cookies?.csrf_token;
-      const headerToken = req.headers['x-csrf-token'] as string | undefined;
-
-      if (!cookieToken || !headerToken || cookieToken !== headerToken) {
+      // Modern browsers advertise cross-site requests; reject them outright.
+      if (req.headers['sec-fetch-site'] === 'cross-site') {
         return res.status(403).json({
           statusCode: 403,
-          message: 'CSRF token validation failed.',
+          message: 'Cross-site request blocked.',
         });
+      }
+
+      if (!isOriginAllowed(req.headers.origin, allowedOrigins)) {
+        return res.status(403).json({
+          statusCode: 403,
+          message: 'Request origin is not allowed.',
+        });
+      }
+
+      const path = req.route?.path ?? req.path;
+      if (!CSRF_EXEMPT_PATHS.has(path)) {
+        const cookieToken = req.cookies?.csrf_token;
+        const headerToken = req.headers['x-csrf-token'] as string | undefined;
+
+        if (
+          !cookieToken ||
+          !headerToken ||
+          !safeEqual(cookieToken, headerToken) ||
+          !isValidCsrfToken(headerToken)
+        ) {
+          return res.status(403).json({
+            statusCode: 403,
+            message: 'CSRF token validation failed.',
+          });
+        }
       }
     }
 
@@ -123,6 +205,8 @@ async function bootstrap() {
       validationError: { target: false, value: false },
     }),
   );
+
+  app.useGlobalFilters(new AllExceptionsFilter());
 
   app.enableShutdownHooks();
 

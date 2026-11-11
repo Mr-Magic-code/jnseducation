@@ -18,10 +18,6 @@ interface PageRow {
   created_at: string | null;
 }
 
-interface IdRow {
-  id: number;
-}
-
 interface WriteResult {
   affectedRows?: number;
 }
@@ -134,7 +130,11 @@ export class PagesService {
     }
   }
 
-  async scanGitHubPages(mode: 'preview' | 'sync' = 'preview', removeMissing = false) {
+  async scanGitHubPages(
+    mode: 'preview' | 'sync' = 'preview',
+    removeMissing = false,
+    confirmDestructive = false,
+  ) {
     const owner = process.env.GITHUB_OWNER;
     const repo = process.env.GITHUB_REPO;
     const token = process.env.GITHUB_TOKEN;
@@ -183,8 +183,21 @@ export class PagesService {
       );
 
       const scannedSlugs = new Set<string>();
-      let wouldInsert = 0;
-      let wouldUpdate = 0;
+      const desiredPages = new Map<
+        string,
+        { slug: string; parent: string | null; title: string }
+      >();
+
+      const queuePage = (
+        slug: string,
+        parent: string | null,
+        title: string,
+      ) => {
+        const key = `${parent ?? ''}|${slug}`;
+        if (!desiredPages.has(key)) {
+          desiredPages.set(key, { slug, parent, title });
+        }
+      };
 
       for (const dir of appDirs) {
         const relativeSlug = dir.path.replace('jnscrm/src/app/', '');
@@ -203,74 +216,87 @@ export class PagesService {
           const parentSlug = pathSegments.slice(0, -1).join('/');
           scannedSlugs.add(parentSlug);
           const parentTitle = this.sanitizePageTitle(
-            this.formatTitle(
-              pathSegments[pathSegments.length - 2],
-            ),
+            this.formatTitle(pathSegments[pathSegments.length - 2]),
           );
           const grandParentSlug =
             pathSegments.length > 2
               ? pathSegments.slice(0, -2).join('/')
               : null;
 
-          const existingParent = await this.dbService.query<IdRow[]>(
-            'SELECT id FROM pages WHERE slug = ? AND (parent_page <=> ?)',
-            [parentSlug, grandParentSlug],
-          );
-
-          if (!existingParent?.length) {
-            if (mode === 'sync') {
-              await this.dbService.query(
-                `INSERT INTO pages (page_title, slug, parent_page, status, publish_date, created_at) VALUES (?, ?, ?, 'PUBLISHED', NOW(), NOW())`,
-                [parentTitle, parentSlug, grandParentSlug],
-              );
-            }
-            wouldInsert += 1;
-          }
+          queuePage(parentSlug, grandParentSlug, parentTitle);
         }
 
         const pageTitle = this.sanitizePageTitle(
-          this.formatTitle(
-            pathSegments[pathSegments.length - 1],
-          ),
+          this.formatTitle(pathSegments[pathSegments.length - 1]),
         );
         const parentSlug =
           pathSegments.length > 1
             ? pathSegments.slice(0, -1).join('/')
             : null;
 
-        const existingPage = await this.dbService.query<IdRow[]>(
-          'SELECT id FROM pages WHERE slug = ? AND (parent_page <=> ?)',
-          [relativeSlug, parentSlug],
-        );
+        queuePage(relativeSlug, parentSlug, pageTitle);
+      }
 
-        if (!existingPage?.length) {
-          if (mode === 'sync') {
-            await this.dbService.query(
-              `INSERT INTO pages (page_title, slug, parent_page, status, publish_date, created_at) VALUES (?, ?, ?, 'PUBLISHED', NOW(), NOW())`,
-              [pageTitle, relativeSlug, parentSlug],
-            );
-          }
-          wouldInsert += 1;
-        } else {
-          wouldUpdate += 1;
-          if (mode === 'sync') {
-            await this.dbService.query(
-              'UPDATE pages SET page_title = ? WHERE id = ?',
-              [pageTitle, existingPage[0].id],
-            );
-          }
+      // Single read instead of two existence checks per directory.
+      const existingRows = await this.dbService.query<PageRow[]>(
+        'SELECT id, page_title, slug, parent_page FROM pages',
+      );
+      const existingByKey = new Map<string, PageRow>();
+      for (const row of Array.isArray(existingRows) ? existingRows : []) {
+        existingByKey.set(`${row.parent_page ?? ''}|${row.slug ?? ''}`, row);
+      }
+
+      const toInsert: { slug: string; parent: string | null; title: string }[] = [];
+      const toUpdate: { id: number; title: string }[] = [];
+
+      for (const [key, page] of desiredPages) {
+        const existing = existingByKey.get(key);
+        if (!existing) {
+          toInsert.push(page);
+        } else if ((existing.page_title ?? '') !== page.title) {
+          toUpdate.push({ id: existing.id, title: page.title });
         }
       }
 
+      const wouldInsert = toInsert.length;
+      const wouldUpdate = toUpdate.length;
+
       let removedCount = 0;
-      if (mode === 'sync' && removeMissing && scannedSlugs.size > 0) {
-        const slugsArray = Array.from(scannedSlugs);
-        const placeholders = slugsArray.map(() => '?').join(',');
-        const deleteResult = await this.dbService.query<WriteResult>(
-          `DELETE FROM pages WHERE slug NOT IN (${placeholders})`,
-          slugsArray,
-        );
-        removedCount = Number(deleteResult?.affectedRows) || 0;
+      if (mode === 'sync') {
+        const INSERT_CHUNK_SIZE = 200;
+        for (let i = 0; i < toInsert.length; i += INSERT_CHUNK_SIZE) {
+          const chunk = toInsert.slice(i, i + INSERT_CHUNK_SIZE);
+          const placeholders = chunk
+            .map(() => `(?, ?, ?, 'PUBLISHED', NOW(), NOW())`)
+            .join(', ');
+          const params = chunk.flatMap((page) => [
+            page.title,
+            page.slug,
+            page.parent,
+          ]);
+
+          await this.dbService.query(
+            `INSERT INTO pages (page_title, slug, parent_page, status, publish_date, created_at) VALUES ${placeholders}`,
+            params,
+          );
+        }
+
+        for (const page of toUpdate) {
+          await this.dbService.query(
+            'UPDATE pages SET page_title = ? WHERE id = ?',
+            [page.title, page.id],
+          );
+        }
+
+        if (removeMissing && confirmDestructive && scannedSlugs.size > 0) {
+          const slugsArray = Array.from(scannedSlugs);
+          const placeholders = slugsArray.map(() => '?').join(',');
+          const deleteResult = await this.dbService.query<WriteResult>(
+            `DELETE FROM pages WHERE slug NOT IN (${placeholders})`,
+            slugsArray,
+          );
+          removedCount = Number(deleteResult?.affectedRows) || 0;
+        }
       }
 
       return {
@@ -279,9 +305,10 @@ export class PagesService {
         wouldInsert,
         wouldUpdate,
         removed: removedCount,
-        message: mode === 'sync'
-          ? `GitHub repository synchronized. Inserted ${wouldInsert}, updated ${wouldUpdate}, removed ${removedCount} page(s).`
-          : `Preview: ${scannedSlugs.size} page(s) found. Would insert ${wouldInsert}, update ${wouldUpdate}. Use mode=sync to apply.`,
+        message:
+          mode === 'sync'
+            ? `GitHub repository synchronized. Inserted ${wouldInsert}, updated ${wouldUpdate}, removed ${removedCount} page(s).`
+            : `Preview: ${scannedSlugs.size} page(s) found. Would insert ${wouldInsert}, update ${wouldUpdate}. Use mode=sync to apply.`,
       };
     } catch (error) {
       console.error('Error scanning GitHub pages:', error);
@@ -295,7 +322,21 @@ export class PagesService {
     }
 
     try {
-      let savedCount = 0;
+      const desiredPages = new Map<
+        string,
+        { slug: string; parent: string | null; title: string }
+      >();
+
+      const queuePage = (
+        slug: string,
+        parent: string | null,
+        title: string,
+      ) => {
+        const key = `${parent ?? ''}|${slug}`;
+        if (!desiredPages.has(key)) {
+          desiredPages.set(key, { slug, parent, title });
+        }
+      };
 
       for (const page of pages) {
         const relativeSlug = page.path.startsWith('jnscrm/src/app/')
@@ -317,25 +358,19 @@ export class PagesService {
             : null;
 
         if (pathSegments.length > 1) {
-          const parentTitle = this.formatTitle(
-            pathSegments[pathSegments.length - 2],
+          const parentTitle = this.sanitizePageTitle(
+            this.formatTitle(pathSegments[pathSegments.length - 2]),
           );
           const grandParentSlug =
             pathSegments.length > 2
               ? pathSegments.slice(0, -2).join('/')
               : null;
 
-          const existingParent = await this.dbService.query<IdRow[]>(
-            'SELECT id FROM pages WHERE slug = ? AND (parent_page <=> ?)',
-            [parentSlug, grandParentSlug],
+          queuePage(
+            pathSegments.slice(0, -1).join('/'),
+            grandParentSlug,
+            parentTitle,
           );
-
-          if (!existingParent?.length) {
-            await this.dbService.query(
-              `INSERT INTO pages (page_title, slug, parent_page, status, publish_date, created_at) VALUES (?, ?, ?, 'PUBLISHED', NOW(), NOW())`,
-              [parentTitle, parentSlug, grandParentSlug],
-            );
-          }
         }
 
         const pageTitle = this.sanitizePageTitle(
@@ -344,26 +379,58 @@ export class PagesService {
             : this.formatTitle(pathSegments[pathSegments.length - 1]),
         );
 
-        const existingRows = await this.dbService.query<IdRow[]>(
-          'SELECT id FROM pages WHERE slug = ? AND (parent_page <=> ?)',
-          [relativeSlug, parentSlug],
-        );
+        queuePage(relativeSlug, parentSlug, pageTitle);
+      }
 
-        if (existingRows?.length) {
-          await this.dbService.query(
-            `UPDATE pages SET page_title = ?, status = 'PUBLISHED' WHERE id = ?`,
-            [pageTitle, existingRows[0].id],
-          );
-          savedCount++;
-          continue;
+      const existingRows = await this.dbService.query<PageRow[]>(
+        'SELECT id, page_title, slug, parent_page, status FROM pages',
+      );
+      const existingByKey = new Map<string, PageRow>();
+      for (const row of Array.isArray(existingRows) ? existingRows : []) {
+        existingByKey.set(`${row.parent_page ?? ''}|${row.slug ?? ''}`, row);
+      }
+
+      const toInsert: { slug: string; parent: string | null; title: string }[] = [];
+      const toUpdate: { id: number; title: string }[] = [];
+
+      for (const [key, page] of desiredPages) {
+        const existing = existingByKey.get(key);
+        if (!existing) {
+          toInsert.push(page);
+        } else if (
+          (existing.page_title ?? '') !== page.title ||
+          (existing.status ?? '').toUpperCase() !== 'PUBLISHED'
+        ) {
+          toUpdate.push({ id: existing.id, title: page.title });
         }
+      }
+
+      const INSERT_CHUNK_SIZE = 200;
+      for (let i = 0; i < toInsert.length; i += INSERT_CHUNK_SIZE) {
+        const chunk = toInsert.slice(i, i + INSERT_CHUNK_SIZE);
+        const placeholders = chunk
+          .map(() => `(?, ?, ?, 'PUBLISHED', NOW(), NOW())`)
+          .join(', ');
+        const params = chunk.flatMap((page) => [
+          page.title,
+          page.slug,
+          page.parent,
+        ]);
 
         await this.dbService.query(
-          `INSERT INTO pages (page_title, slug, parent_page, status, publish_date, created_at) VALUES (?, ?, ?, 'PUBLISHED', NOW(), NOW())`,
-          [pageTitle, relativeSlug, parentSlug],
+          `INSERT INTO pages (page_title, slug, parent_page, status, publish_date, created_at) VALUES ${placeholders}`,
+          params,
         );
-        savedCount++;
       }
+
+      for (const page of toUpdate) {
+        await this.dbService.query(
+          `UPDATE pages SET page_title = ?, status = 'PUBLISHED' WHERE id = ?`,
+          [page.title, page.id],
+        );
+      }
+
+      const savedCount = toInsert.length + toUpdate.length;
 
       return {
         success: true,

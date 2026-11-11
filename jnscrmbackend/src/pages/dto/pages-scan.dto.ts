@@ -10,4 +10,10 @@ export class PagesScanDto {
   @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean({ message: 'removeMissing must be a boolean.' })
   removeMissing?: boolean;
+
+  // Destructive deletions require an explicit second confirmation.
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean({ message: 'confirmDestructive must be a boolean.' })
+  confirmDestructive?: boolean;
 }

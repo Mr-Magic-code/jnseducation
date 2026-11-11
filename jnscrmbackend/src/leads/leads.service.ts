@@ -1,22 +1,38 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import sanitizeHtml from 'sanitize-html';
 import { DatabaseService } from '../database/database.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import { CreateLeadDto } from './dto/create-lead.dto.js';
+
+interface ActorContext {
+  id?: number;
+  email?: string;
+  role?: string;
+  ip?: string;
+}
 
 @Injectable()
 export class LeadsService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    @Optional() private readonly audit?: AuditService,
+  ) {}
 
   private sanitizeFormData(data: unknown): unknown {
     if (typeof data === 'string') {
-      return sanitizeHtml(String(data), { allowedTags: [], allowedAttributes: {} });
+      return sanitizeHtml(String(data), {
+        allowedTags: [],
+        allowedAttributes: {},
+      });
     }
     if (Array.isArray(data)) {
       return data.map((item) => this.sanitizeFormData(item));
     }
     if (data && typeof data === 'object') {
       const sanitized: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      for (const [key, value] of Object.entries(
+        data as Record<string, unknown>,
+      )) {
         sanitized[key] = this.sanitizeFormData(value);
       }
       return sanitized;
@@ -39,41 +55,45 @@ export class LeadsService {
     ]);
 
     const leadId = result.insertId;
+    const crmUrl = process.env.CRM_API_URL;
 
-    // Forward to CRM with retries and timeout; errors are logged but do not block
-    const crmResult = await this.forwardToCustomCRMWithRetry(
-      createLeadDto,
-      leadId,
-    );
-
-    if (crmResult.success) {
+    if (!crmUrl) {
       return {
         success: true,
-        message: 'Lead saved successfully and synced to CRM',
+        message: 'Lead saved successfully',
         leadId,
       };
     }
 
-    // CRM sync failed - lead exists in main DB but not in CRM
-    // Log the failure for manual follow-up
-    console.error(
-      `CRM sync failed for lead ID ${leadId}: ${crmResult.error?.message}`,
-    );
+    // Never block the public form on a third-party CRM. The lead is already
+    // durably stored; synchronization happens out-of-band with retries.
+    void this.forwardToCustomCRMWithRetry(createLeadDto, leadId)
+      .then((crmResult) => {
+        if (!crmResult.success) {
+          console.error(
+            `CRM sync failed for lead ID ${leadId}: ${crmResult.error?.message}`,
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        console.error(
+          `CRM sync crashed for lead ID ${leadId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
 
     return {
       success: true,
-      message:
-        'Lead saved successfully; CRM sync failed. Lead ID ' +
-        leadId +
-        ' requires manual CRM sync.',
+      message: 'Lead saved successfully; CRM sync queued.',
       leadId,
-      crmSyncFailed: true,
+      crmSyncQueued: true,
     };
   }
 
   /**
-   * Forward lead to custom CRM with retry logic and timeout.
-   * Returns { success: true } on success, or { success: false, error } on final failure.
+   * Forward a lead to the configured CRM with bounded retries and a timeout.
+   * Returns { success: false } on final failure (never throws).
    */
   private async forwardToCustomCRMWithRetry(
     payload: CreateLeadDto,
@@ -83,7 +103,24 @@ export class LeadsService {
     const crmUrl = process.env.CRM_API_URL;
 
     if (!crmUrl) {
-      return { success: true }; // No CRM configured, treat as success
+      return { success: true };
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(crmUrl);
+    } catch {
+      return {
+        success: false,
+        error: new Error('CRM_API_URL is not a valid URL.'),
+      };
+    }
+
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return {
+        success: false,
+        error: new Error('CRM_API_URL must use http or https.'),
+      };
     }
 
     const crmToken = process.env.CRM_API_TOKEN;
@@ -95,57 +132,51 @@ export class LeadsService {
       headers.Authorization = `Bearer ${crmToken}`;
     }
 
-    // Transform payload to match CRM expected schema
     const crmPayload = this.transformForCrm(payload);
-
     let lastError: Error | undefined;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
-
-      const response = await fetch(crmUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(crmPayload),
-        signal: controller.signal,
-      });
-
-        clearTimeout(timeoutId);
+        const response = await fetch(crmUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(crmPayload),
+          signal: controller.signal,
+        });
 
         if (!response.ok) {
           throw new Error(`CRM responded with status ${response.status}`);
         }
 
-        // Success - exit retry loop
         return { success: true };
-      } catch (error: any) {
-        lastError = error;
+      } catch (error: unknown) {
+        lastError =
+          error instanceof Error ? error : new Error(String(error));
 
         if (attempt === maxRetries) {
-          // Last attempt failed
-          throw error;
+          console.error(
+            `CRM sync for lead ${leadId} failed after ${maxRetries} attempts.`,
+          );
+          return { success: false, error: lastError };
         }
 
-        // Exponential backoff before retry
         await new Promise((resolve) =>
           setTimeout(resolve, 1000 * Math.pow(2, attempt)),
         );
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
-    // Should not reach here, but just in case
     return {
       success: false,
       error: lastError || new Error('CRM sync failed with unknown error'),
     };
   }
 
-  /**
-   * Transform lead data to match the custom CRM API schema.
-   * Adjust field names and structure as needed for your CRM integration.
-   */
   private transformForCrm(dto: CreateLeadDto): any {
     const { form_type, form_data, source_url } = dto;
     const sanitized = this.sanitizeFormData(form_data);
@@ -154,14 +185,8 @@ export class LeadsService {
       form_type,
       form_data: JSON.stringify(sanitized),
       source_url: source_url || '',
-      // Map additional fields as required by your CRM
-      // lead_status: 'new',
-      // created_at: new Date().toISOString(),
-      // Your CRM-specific mappings here
     };
   }
-
-  // ... rest of the service methods (getFormTypes, findAll, updateStatus, remove) unchanged
 
   async getFormTypes(): Promise<string[]> {
     const query = `SELECT DISTINCT form_type FROM leads WHERE form_type IS NOT NULL AND form_type != '' ORDER BY form_type ASC`;
@@ -170,14 +195,14 @@ export class LeadsService {
   }
 
   async findAll(
-    formType?: string, 
-    status?: string, 
-    search?: string, 
+    formType?: string,
+    status?: string,
+    search?: string,
     dateFilter?: string,
     startDate?: string,
     endDate?: string,
-    page: number = 1, 
-    limit: number = 100
+    page: number = 1,
+    limit: number = 100,
   ) {
     let query = `SELECT * FROM leads WHERE 1=1`;
     let countQuery = `SELECT COUNT(*) as total FROM leads WHERE 1=1`;
@@ -192,7 +217,6 @@ export class LeadsService {
     }
 
     if (status && status !== 'All Type') {
-      // 🚀 ENTERPRISE FIX 1: Case-insensitive matching. Avoids strict 'read' vs 'Read' bugs
       query += ` AND LOWER(status) = LOWER(?)`;
       countQuery += ` AND LOWER(status) = LOWER(?)`;
       params.push(status);
@@ -221,7 +245,6 @@ export class LeadsService {
     }
 
     if (search) {
-      // 🚀 ENTERPRISE FIX 2: Removed CAST(). Direct LIKE on JSON/Text column is 100x faster
       query += ` AND (source_url LIKE ? OR form_data LIKE ?)`;
       countQuery += ` AND (source_url LIKE ? OR form_data LIKE ?)`;
       params.push(`%${search}%`, `%${search}%`);
@@ -250,23 +273,50 @@ export class LeadsService {
     };
   }
 
-  async updateStatus(id: number, status: 'Unread' | 'Read' | 'Trashed') {
+  async updateStatus(
+    id: number,
+    status: 'Unread' | 'Read' | 'Trashed',
+    actor?: ActorContext,
+  ) {
     const query = `UPDATE leads SET status = ? WHERE id = ?`;
     const result: any = await this.db.query(query, [status, id]);
 
     if (result.affectedRows === 0) {
       throw new NotFoundException(`Lead with ID ${id} not found`);
     }
+
+    this.audit?.record({
+      actorId: actor?.id ?? null,
+      actorEmail: actor?.email ?? null,
+      actorRole: actor?.role ?? null,
+      action: 'lead_status_updated',
+      entity: 'lead',
+      entityId: id,
+      metadata: { status },
+      ip: actor?.ip ?? null,
+    });
+
     return { success: true, message: `Lead status updated to ${status}` };
   }
 
-  async remove(id: number) {
+  async remove(id: number, actor?: ActorContext) {
     const query = `DELETE FROM leads WHERE id = ?`;
     const result: any = await this.db.query(query, [id]);
-    
+
     if (result.affectedRows === 0) {
       throw new NotFoundException(`Lead with ID ${id} not found`);
     }
+
+    this.audit?.record({
+      actorId: actor?.id ?? null,
+      actorEmail: actor?.email ?? null,
+      actorRole: actor?.role ?? null,
+      action: 'lead_deleted',
+      entity: 'lead',
+      entityId: id,
+      ip: actor?.ip ?? null,
+    });
+
     return { success: true, message: 'Lead permanently deleted' };
   }
 }

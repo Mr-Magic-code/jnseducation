@@ -5,7 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import type { Metadata } from "next";
 import PageHeader from '@/components/PageHeader';
-import pool from '@/lib/db'; // Aapke project ki database connection file (path verify kar lein agar alag ho)
+import { backendUrl } from '@/lib/serverApi';
 import type { BlogRecord } from '@/types/content';
 
 export const metadata: Metadata = {
@@ -13,20 +13,22 @@ export const metadata: Metadata = {
   description: "Stay updated with global education news, university admission guidance, and student visa updates.",
 };
 
-async function getGeneralBlogs() {
+async function getGeneralBlogs(): Promise<BlogRecord[]> {
   try {
-    // Direct database query aapke blogs table se data fetch karne ke liye
-    const [rows] = await pool.query<BlogRecord[]>(
-      `SELECT blogs.*, blog_categories.name AS category_name 
-       FROM blogs 
-       LEFT JOIN blog_categories ON blogs.category_id = blog_categories.id 
-       WHERE LOWER(blogs.status) = 'published' 
-       ORDER BY blogs.created_at DESC`
-    );
-    return rows || [];
+    const res = await fetch(backendUrl('/blogs/public?limit=100'), {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!res.ok) {
+      return [];
+    }
+
+    const data = (await res.json()) as { blogs?: BlogRecord[] };
+    return Array.isArray(data.blogs) ? data.blogs : [];
   } catch (error) {
-    console.error('Error fetching general blogs from DB:', error);
-    return []; // Safety fallback so the page never crashes
+    console.error('Error fetching published blogs:', error);
+    return [];
   }
 }
 

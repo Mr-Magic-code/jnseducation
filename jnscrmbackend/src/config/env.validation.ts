@@ -1,9 +1,36 @@
-const REQUIRED_VARIABLES = ['JWT_SECRET', 'CSRF_SECRET', 'DATABASE_HOST', 'DATABASE_USER', 'DATABASE_NAME'];
+const REQUIRED_VARIABLES = [
+  'JWT_SECRET',
+  'CSRF_SECRET',
+  'DATABASE_HOST',
+  'DATABASE_USER',
+  'DATABASE_NAME',
+];
 
 const PRODUCTION_SECRET_MIN_LENGTH = 32;
 
+// Reject obvious placeholders and sample values. This is intentionally broader
+// than the previous exact-match check so values such as
+// "change-me-to-a-long-random-secret-at-least-32-chars" can no longer pass.
+const PLACEHOLDER_PATTERNS: RegExp[] = [
+  /change[\s_-]?me/i,
+  /replace[\s_-]?with/i,
+  /placeholder/i,
+  /your[\s_-]?(jwt|secret|key|token)/i,
+  /example[\s_-]?(secret|key|token)/i,
+  /sample[\s_-]?(secret|key|token)/i,
+  /^secret$/i,
+  /^jwt-secret$/i,
+  /^your-secret-key$/i,
+  /^changeme$/i,
+];
+
 function isProduction(config: Record<string, unknown>): boolean {
   return String(config.NODE_ENV ?? '').toLowerCase() === 'production';
+}
+
+function looksLikePlaceholder(value: string): boolean {
+  const trimmed = value.trim();
+  return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 export function validateEnvironment(
@@ -25,12 +52,60 @@ export function validateEnvironment(
       `JWT_SECRET must be at least ${PRODUCTION_SECRET_MIN_LENGTH} characters long.`,
     );
   }
+  if (jwtSecret && looksLikePlaceholder(jwtSecret)) {
+    errors.push('JWT_SECRET must not use a placeholder or sample value.');
+  }
+
+  const csrfSecret = String(config.CSRF_SECRET ?? '');
+  if (csrfSecret && looksLikePlaceholder(csrfSecret)) {
+    errors.push('CSRF_SECRET must not use a placeholder or sample value.');
+  }
+  if (
+    isProduction(config) &&
+    csrfSecret &&
+    csrfSecret.length < PRODUCTION_SECRET_MIN_LENGTH
+  ) {
+    errors.push(
+      `CSRF_SECRET must be at least ${PRODUCTION_SECRET_MIN_LENGTH} characters long in production.`,
+    );
+  }
 
   if (
+    isProduction(config) &&
     jwtSecret &&
-    /^(change-me|secret|jwt-secret|your-secret-key)$/i.test(jwtSecret.trim())
+    csrfSecret &&
+    jwtSecret === csrfSecret
   ) {
-    errors.push('JWT_SECRET must not use a placeholder value.');
+    errors.push('JWT_SECRET and CSRF_SECRET must be different values.');
+  }
+
+  // Registration secrets must be present in production when registration is
+  // enabled; they must never be placeholder values.
+  const registrationEnabled = (variable: string, defaultValue: boolean) => {
+    const raw = config[variable];
+    if (raw === undefined || raw === '') {
+      return defaultValue;
+    }
+    return String(raw).toLowerCase() === 'true';
+  };
+
+  if (isProduction(config)) {
+    if (registrationEnabled('ALLOW_SUPER_ADMIN_REGISTRATION', false)) {
+      const secret = String(config.SUPER_ADMIN_SECRET_KEY ?? '');
+      if (!secret || looksLikePlaceholder(secret)) {
+        errors.push(
+          'SUPER_ADMIN_SECRET_KEY must be set to a strong value when ALLOW_SUPER_ADMIN_REGISTRATION=true.',
+        );
+      }
+    }
+    if (registrationEnabled('ALLOW_MANAGER_REGISTRATION', false)) {
+      const secret = String(config.MANAGER_SECRET_KEY ?? '');
+      if (!secret || looksLikePlaceholder(secret)) {
+        errors.push(
+          'MANAGER_SECRET_KEY must be set to a strong value when ALLOW_MANAGER_REGISTRATION=true.',
+        );
+      }
+    }
   }
 
   const nodeEnv = String(config.NODE_ENV ?? 'development').toLowerCase();
@@ -66,6 +141,9 @@ export function validateEnvironment(
         if (!['http:', 'https:'].includes(parsed.protocol)) {
           errors.push(`FRONTEND_URLS contains an unsupported URL: ${url}`);
         }
+        if (parsed.protocol === 'http:') {
+          errors.push(`FRONTEND_URLS must use https in production: ${url}`);
+        }
       } catch {
         errors.push(`FRONTEND_URLS contains an invalid URL: ${url}`);
       }
@@ -83,6 +161,24 @@ export function validateEnvironment(
   }
 
   return normalized;
+}
+
+export function isRegistrationEnabled(
+  role: 'super-admin' | 'manager',
+): boolean {
+  const variable =
+    role === 'super-admin'
+      ? 'ALLOW_SUPER_ADMIN_REGISTRATION'
+      : 'ALLOW_MANAGER_REGISTRATION';
+  const configured = process.env[variable];
+
+  if (configured === undefined || configured === '') {
+    // Secure-by-default: registration is disabled in production unless the
+    // operator explicitly opts in.
+    return process.env.NODE_ENV !== 'production';
+  }
+
+  return configured.toLowerCase() === 'true';
 }
 
 export function getAllowedOrigins(): string[] {

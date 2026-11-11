@@ -1,5 +1,5 @@
 import { Metadata } from 'next';
-import Link from 'next/link';
+import { notFound } from 'next/navigation';
 import PageHero from '@/components/PageHero';
 
 const SECTIONS: Record<string, { title: string; description: string }> = {
@@ -68,7 +68,7 @@ async function resolveSlug(params: { slug: unknown }): Promise<string[]> {
   return Array.isArray(slug) ? slug : [];
 }
 
-export async function metadata(params: { slug: unknown }): Promise<Metadata> {
+export async function generateMetadata(params: { slug: unknown }): Promise<Metadata> {
   const slug = await resolveSlug(params);
   const first = slug[0];
   const section = SECTIONS[first];
@@ -84,15 +84,7 @@ export default async function CatchAllPage({ params }: { params: { slug: unknown
   const section = SECTIONS[first];
 
   if (!section) {
-    return (
-      <div className="min-h-[60vh] flex flex-col items-center justify-center p-6 text-center">
-        <h1 className="text-3xl font-bold text-slate-900">Page not found</h1>
-        <p className="mt-2 text-slate-600">We couldn’t find the page you’re looking for.</p>
-        <Link href="/" className="mt-4 inline-block text-primary underline">
-          Return to homepage
-        </Link>
-      </div>
-    );
+    notFound();
   }
 
   return (

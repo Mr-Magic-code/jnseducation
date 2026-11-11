@@ -1,8 +1,8 @@
 import React, { cache as reactCache } from 'react';
-import pool from '@/lib/db';
 import { notFound } from 'next/navigation';
 import SingleBlogLayout from '@/components/SingleBlogLayout';
 import { Metadata } from 'next';
+import { backendUrl } from '@/lib/serverApi';
 import type { BlogRecord } from '@/types/content';
 
 export const revalidate = 60;
@@ -10,17 +10,24 @@ export const revalidate = 60;
 const SITE_URL = (process.env.SITE_URL || 'https://jnsedu.com').replace(/\/$/, '');
 const DEFAULT_OG_IMAGE = `${SITE_URL}/images/pages-banner/Blogs-Banner.webp`;
 
-const getBlog = reactCache(async (slug: string) => {
-  const [rows] = await pool.query<BlogRecord[]>(
-    `SELECT blogs.*, blog_categories.name AS category_name
-     FROM blogs
-     LEFT JOIN blog_categories ON blogs.category_id = blog_categories.id
-     WHERE blogs.slug = ?
-     ORDER BY LOWER(blogs.status) = 'published' DESC
-     LIMIT 1`,
-    [slug],
-  );
-  return rows[0] || null;
+const getBlog = reactCache(async (slug: string): Promise<BlogRecord | null> => {
+  try {
+    const res = await fetch(
+      backendUrl(`/blogs/public/${encodeURIComponent(slug)}`),
+      {
+        next: { revalidate: 60 },
+        headers: { Accept: 'application/json' },
+      },
+    );
+
+    if (!res.ok) {
+      return null;
+    }
+
+    return (await res.json()) as BlogRecord;
+  } catch {
+    return null;
+  }
 });
 
 function toAbsoluteUrl(value: string | null | undefined): string {

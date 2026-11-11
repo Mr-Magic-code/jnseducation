@@ -12,6 +12,7 @@ const BACKEND_URL =
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  poweredByHeader: false,
   images: {
     remotePatterns: [
       {
@@ -70,7 +71,23 @@ const nextConfig: NextConfig = {
       },
       {
         key: "Permissions-Policy",
-        value: "camera=(), microphone=(), geolocation=()",
+        value: "camera=(), microphone=(), geolocation=(), payment=()",
+      },
+      {
+        key: "Cross-Origin-Opener-Policy",
+        value: "same-origin",
+      },
+      {
+        key: "Cross-Origin-Resource-Policy",
+        value: "same-origin",
+      },
+      {
+        key: "X-DNS-Prefetch-Control",
+        value: "off",
+      },
+      {
+        key: "X-Permitted-Cross-Domain-Policies",
+        value: "none",
       },
     ];
 
@@ -85,6 +102,14 @@ const nextConfig: NextConfig = {
       {
         source: "/:path*",
         headers,
+      },
+      {
+        // Authenticated dashboards must never be cached or indexed.
+        source: "/protection/:path*",
+        headers: [
+          { key: "Cache-Control", value: "private, no-store, max-age=0" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+        ],
       },
     ];
   },
